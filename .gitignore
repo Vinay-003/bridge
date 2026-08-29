@@ -1,0 +1,21 @@
+# deps
+node_modules/
+target/
+dist/
+build/
+out/
+# android
+.gradle/
+*.apk
+*.aab
+local.properties
+# secrets
+.env
+*.key
+*.pem
+# os
+.DS_Store
+Thumbs.db
+# tauri
+src-tauri/target/
+# docx dup already handled
