@@ -34,3 +34,4 @@ gethostname = "0.4"
 hex = "0.4"
 if-addrs = "0.10"
 arboard = "3"
+chrono = { version = "0.4", features = ["serde"] }

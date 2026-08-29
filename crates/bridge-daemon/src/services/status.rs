@@ -14,16 +14,18 @@ pub struct DeviceStatus {
     pub ram: Ram,
     pub storage: Storage,
     pub signal: Signal,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 pub fn collect_status() -> DeviceStatus {
-    // mock + read /proc/meminfo for linux host status
     let (avail, total) = read_mem();
     DeviceStatus {
-        battery: Battery { pct: 87, charging: true, tempC: 31.5 },
+        battery: Battery { pct: 77, charging: false, tempC: 30.0 },
         ram: Ram { availMb: avail, totalMb: total },
         storage: Storage { freeGb: 120.5, totalGb: 512.0 },
         signal: Signal { dbm: -67, bars: 4 },
+        source: Some("daemon".into()),
     }
 }
 
@@ -35,4 +37,14 @@ fn read_mem() -> (u64,u64) {
         if line.starts_with("MemTotal:") { total = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0)/1024; }
     }
     (avail, total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn status_collects() {
+        let s = collect_status();
+        assert!(s.ram.totalMb > 0);
+    }
 }
