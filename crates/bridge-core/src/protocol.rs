@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use thiserror::Error;
+use base64::Engine as _;
 
 #[derive(Debug, Error)]
 pub enum BridgeError {
@@ -49,6 +50,19 @@ pub enum MessageType {
     #[serde(rename = "storage.rm")] StorageRm,
     #[serde(rename = "storage.sync")] StorageSync,
     #[serde(rename = "storage.conflict")] StorageConflict,
+    // relay + mesh — Phase 6 Global Relay + Multi-device Mesh
+    #[serde(rename = "relay.announce")] RelayAnnounce,
+    #[serde(rename = "relay.relay")] RelayRelay,
+    #[serde(rename = "mesh.sync")] MeshSync,
+    #[serde(rename = "mesh.conflict")] MeshConflict,
+    // plugin — Phase 7 Plugin Platform
+    #[serde(rename = "plugin.list")] PluginList,
+    #[serde(rename = "plugin.load")] PluginLoad,
+    #[serde(rename = "plugin.emit")] PluginEmit,
+    // ai — Phase 7 AI
+    #[serde(rename = "ai.summarize")] AiSummarize,
+    #[serde(rename = "ai.transcribe")] AiTranscribe,
+    #[serde(rename = "ai.result")] AiResult,
     // error
     #[serde(rename = "error")] Error,
 }
@@ -482,6 +496,468 @@ pub fn vector_clock_merge(a: &std::collections::HashMap<String, u64>, b: &std::c
         out.insert(k.clone(), (*bv).max(av));
     }
     out
+}
+
+// ── Relay — Phase 6 ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RelayState {
+    Disconnected,
+    Announcing,
+    HolePunching,
+    RelayReady,
+    ConnectedDirect,
+    ConnectedViaRelay,
+    Failed,
+}
+
+impl RelayState {
+    pub fn can_transition(&self, next: &RelayState) -> bool {
+        matches!(
+            (self, next),
+            (RelayState::Disconnected, RelayState::Announcing)
+                | (RelayState::Announcing, RelayState::HolePunching)
+                | (RelayState::Announcing, RelayState::RelayReady)
+                | (RelayState::Announcing, RelayState::Failed)
+                | (RelayState::Announcing, RelayState::Disconnected)
+                | (RelayState::HolePunching, RelayState::ConnectedDirect)
+                | (RelayState::HolePunching, RelayState::RelayReady)
+                | (RelayState::HolePunching, RelayState::Failed)
+                | (RelayState::RelayReady, RelayState::ConnectedViaRelay)
+                | (RelayState::RelayReady, RelayState::Disconnected)
+                | (RelayState::ConnectedDirect, RelayState::Disconnected)
+                | (RelayState::ConnectedDirect, RelayState::RelayReady)
+                | (RelayState::ConnectedViaRelay, RelayState::Disconnected)
+                | (RelayState::Failed, RelayState::Disconnected)
+                | (RelayState::Disconnected, RelayState::Failed)
+        )
+    }
+}
+
+pub const RELAY_ANNOUNCE_URL: &str = "https://relay.bridge.dev/v1/announce";
+pub const STUN_SERVER: &str = "stun.l.google.com:19302";
+
+pub fn is_valid_device_id(s: &str) -> bool {
+    if s.is_empty() || s.len() > 64 {
+        return false;
+    }
+    s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+}
+
+pub fn is_valid_stun_server(s: &str) -> bool {
+    // host:port
+    if let Some((host, port_str)) = s.rsplit_once(':') {
+        if host.is_empty() || host.len() > 253 { return false; }
+        if let Ok(port) = port_str.parse::<u16>() {
+            if port == 0 { return false; }
+            // host must be dot-separated or single label, no spaces
+            if host.contains(' ') || host.contains('\0') { return false; }
+            return true;
+        }
+    }
+    false
+}
+
+pub fn is_opaque_blob(s: &str) -> bool {
+    // base64 opaque, 16..1M chars (decoded ≤ 1MB is checked elsewhere)
+    if s.len() < 16 || s.len() > 1_400_000 { return false; }
+    // allow base64 chars + padding
+    s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+}
+
+pub fn validate_relay_announce_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let device_id = payload.get("deviceId").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing deviceId".into()))?;
+    if !is_valid_device_id(device_id) {
+        return Err(BridgeError::Validation(format!("invalid deviceId: {}", device_id)));
+    }
+    let blob = payload.get("blob").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing blob".into()))?;
+    if !is_opaque_blob(blob) {
+        return Err(BridgeError::Validation("invalid blob (must be base64 16..1M)".into()));
+    }
+    // blob decoded size check ≤ 1MB
+    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(blob) {
+        if decoded.len() > 1024 * 1024 { return Err(BridgeError::Validation("blob too large >1MB decoded".into())); }
+        if decoded.len() < 12 { return Err(BridgeError::Validation("blob too small".into())); }
+    } else {
+        // try without padding variation via STANDARD; also allow URL_SAFE? we enforce STANDARD.
+        return Err(BridgeError::Validation("invalid blob base64".into()));
+    }
+    if let Some(ts) = payload.get("ts").and_then(|v| v.as_i64()) {
+        let now = chrono::Utc::now().timestamp_millis();
+        if (now - ts).abs() > 5 * 60 * 1000 {
+            return Err(BridgeError::Validation(format!("clock skew ts {} vs now {}", ts, now)));
+        }
+    }
+    if let Some(stun) = payload.get("stunServer").and_then(|v| v.as_str()) {
+        if !is_valid_stun_server(stun) {
+            return Err(BridgeError::Validation(format!("invalid stunServer: {}", stun)));
+        }
+    }
+    if let Some(mapped) = payload.get("mappedAddr").and_then(|v| v.as_str()) {
+        if mapped.parse::<std::net::SocketAddr>().is_err() {
+            return Err(BridgeError::Validation(format!("invalid mappedAddr: {}", mapped)));
+        }
+    }
+    if let Some(fp) = payload.get("fp").and_then(|v| v.as_str()) {
+        if fp.len() != 12 || !fp.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(BridgeError::Validation(format!("invalid fp: {}", fp)));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_relay_relay_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let to = payload.get("to").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing to".into()))?;
+    if !is_valid_device_id(to) { return Err(BridgeError::Validation(format!("invalid to: {}", to))); }
+    let from = payload.get("from").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing from".into()))?;
+    if !is_valid_device_id(from) { return Err(BridgeError::Validation(format!("invalid from: {}", from))); }
+    let blob = payload.get("blob").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing blob".into()))?;
+    if !is_opaque_blob(blob) { return Err(BridgeError::Validation("invalid blob".into())); }
+    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(blob) {
+        if decoded.len() > 1024 * 1024 { return Err(BridgeError::Validation("blob too large".into())); }
+    } else {
+        return Err(BridgeError::Validation("invalid blob base64".into()));
+    }
+    if let Some(ts) = payload.get("ts").and_then(|v| v.as_i64()) {
+        let now = chrono::Utc::now().timestamp_millis();
+        if (now - ts).abs() > 5 * 60 * 1000 {
+            return Err(BridgeError::Validation(format!("clock skew ts {}", ts)));
+        }
+    }
+    if let Some(nonce) = payload.get("nonce").and_then(|v| v.as_str()) {
+        if nonce.len() != 8 || !nonce.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(BridgeError::Validation(format!("invalid nonce: {}", nonce)));
+        }
+    }
+    Ok(())
+}
+
+// ── Mesh — Phase 6 ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MeshState {
+    Idle,
+    Syncing,
+    Conflict,
+}
+
+impl MeshState {
+    pub fn can_transition(&self, next: &MeshState) -> bool {
+        matches!(
+            (self, next),
+            (MeshState::Idle, MeshState::Syncing)
+                | (MeshState::Syncing, MeshState::Idle)
+                | (MeshState::Syncing, MeshState::Conflict)
+                | (MeshState::Conflict, MeshState::Syncing)
+                | (MeshState::Conflict, MeshState::Idle)
+        )
+    }
+}
+
+// LWW for clipboard
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LwwClipboard {
+    pub text: String,
+    pub mime: String,
+    pub ts: i64,
+    pub device_id: String,
+}
+
+pub fn lww_clipboard_merge(a: &LwwClipboard, b: &LwwClipboard) -> LwwClipboard {
+    if b.ts > a.ts { b.clone() }
+    else if b.ts < a.ts { a.clone() }
+    else {
+        // tie break device_id lex
+        if b.device_id > a.device_id { b.clone() } else { a.clone() }
+    }
+}
+
+pub fn validate_mesh_sync_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let device_id = payload.get("deviceId").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing deviceId".into()))?;
+    if !is_valid_device_id(device_id) { return Err(BridgeError::Validation(format!("invalid deviceId: {}", device_id))); }
+    // vectors is optional? spec says required
+    if let Some(vectors) = payload.get("vectors").and_then(|v| v.as_object()) {
+        for (k, v) in vectors {
+            if !is_valid_device_id(k) { return Err(BridgeError::Validation(format!("invalid vector key: {}", k))); }
+            if v.as_u64().is_none() { return Err(BridgeError::Validation(format!("invalid vector value for {}: {}", k, v))); }
+        }
+    } else if payload.get("vectors").is_some() {
+        return Err(BridgeError::Validation("invalid vectors".into()));
+    } else {
+        return Err(BridgeError::Validation("missing vectors".into()));
+    }
+    if let Some(entries) = payload.get("entries").and_then(|v| v.as_array()) {
+        if entries.len() > 100 {
+            return Err(BridgeError::Validation("entries >100".into()));
+        }
+        for e in entries {
+            if let Some(path) = e.get("path").and_then(|v| v.as_str()) {
+                validate_storage_path(path)?;
+            } else {
+                return Err(BridgeError::Validation("entry missing path".into()));
+            }
+            if let Some(vc) = e.get("vector").and_then(|v| v.as_object()) {
+                for (k, v) in vc {
+                    if !is_valid_device_id(k) { return Err(BridgeError::Validation(format!("invalid entry vector key: {}", k))); }
+                    if v.as_u64().is_none() { return Err(BridgeError::Validation(format!("invalid entry vector value for {}: {}", k, v))); }
+                }
+            }
+            if let Some(lww) = e.get("lww").and_then(|v| v.as_object()) {
+                let text = lww.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                if text.len() > 1024 * 1024 { return Err(BridgeError::Validation("lww text too large".into())); }
+                let ts = lww.get("ts").and_then(|v| v.as_i64()).ok_or_else(|| BridgeError::Validation("missing lww ts".into()))?;
+                let now = chrono::Utc::now().timestamp_millis();
+                if (now - ts).abs() > 5 * 60 * 1000 { return Err(BridgeError::Validation("lww clock skew".into())); }
+            }
+            if let Some(sha) = e.get("sha256").and_then(|v| v.as_str()) {
+                if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(BridgeError::Validation(format!("invalid sha256: {}", sha)));
+                }
+            }
+        }
+    }
+    if let Some(ts) = payload.get("ts").and_then(|v| v.as_i64()) {
+        let now = chrono::Utc::now().timestamp_millis();
+        if (now - ts).abs() > 5 * 60 * 1000 {
+            return Err(BridgeError::Validation(format!("clock skew ts {}", ts)));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_mesh_conflict_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let path = payload.get("path").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing path".into()))?;
+    validate_storage_path(path)?;
+    let res = payload.get("resolution").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(res, "lww" | "rename" | "manual") {
+        return Err(BridgeError::Validation(format!("invalid resolution: {}", res)));
+    }
+    let winner = payload.get("winner").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(winner, "local" | "remote") {
+        return Err(BridgeError::Validation(format!("invalid winner: {}", winner)));
+    }
+    if let Some(lr) = payload.get("loserRename").and_then(|v| v.as_str()) {
+        if !lr.is_empty() {
+            // loserRename may be path-like, validate not traversal absolute? allow "/file.conflict-..."
+            // Ensure no ".."
+            if lr.contains("..") { return Err(BridgeError::Validation(format!("invalid loserRename: {}", lr))); }
+            if lr.len() > 4096 { return Err(BridgeError::Validation("loserRename too long".into())); }
+        }
+    }
+    Ok(())
+}
+
+// ── Plugin — Phase 7 ──────────────────────────────────────────────────────
+
+pub const ALLOWED_PLUGIN_CAPS: &[&str] = &["notify", "clipboard", "storage", "ai.summarize", "ai.transcribe"];
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PluginState {
+    Unloaded,
+    Loading,
+    Loaded,
+    Running,
+    Reloading,
+    Failed,
+    Disabled,
+}
+
+impl PluginState {
+    pub fn can_transition(&self, next: &PluginState) -> bool {
+        matches!(
+            (self, next),
+            (PluginState::Unloaded, PluginState::Loading)
+                | (PluginState::Loading, PluginState::Loaded)
+                | (PluginState::Loading, PluginState::Failed)
+                | (PluginState::Loaded, PluginState::Running)
+                | (PluginState::Running, PluginState::Reloading)
+                | (PluginState::Reloading, PluginState::Running)
+                | (PluginState::Reloading, PluginState::Failed)
+                | (PluginState::Running, PluginState::Failed)
+                | (PluginState::Failed, PluginState::Loading)
+                | (PluginState::Running, PluginState::Disabled)
+                | (PluginState::Disabled, PluginState::Loading)
+                | (PluginState::Running, PluginState::Unloaded)
+                | (PluginState::Loaded, PluginState::Failed)
+                | (PluginState::Failed, PluginState::Unloaded)
+        )
+    }
+}
+
+pub fn is_valid_plugin_id(s: &str) -> bool {
+    if s.len() < 3 || s.len() > 32 { return false; }
+    s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+pub fn is_valid_plugin_version(s: &str) -> bool {
+    // semver x.y.z
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 3 { return false; }
+    for p in parts {
+        if p.is_empty() || p.len() > 5 { return false; }
+        if !p.chars().all(|c| c.is_ascii_digit()) { return false; }
+        // no leading zeros unless single zero? allow but stricter: if len>1 and starts with 0 -> false
+        if p.len() > 1 && p.starts_with('0') { return false; }
+    }
+    true
+}
+
+pub fn sanitize_plugin_path(entry: &str) -> Result<String, BridgeError> {
+    if entry.is_empty() { return Err(BridgeError::Validation("entry empty".into())); }
+    if entry.len() > 256 { return Err(BridgeError::Validation("entry too long".into())); }
+    if entry.contains('\0') { return Err(BridgeError::Validation("entry contains NUL".into())); }
+    if entry.starts_with('/') || entry.starts_with('\\') {
+        return Err(BridgeError::Validation("entry must be relative".into()));
+    }
+    for seg in entry.split('/') {
+        if seg == ".." { return Err(BridgeError::Validation(format!("path traversal in entry: {}", entry))); }
+        if seg.contains('\\') { return Err(BridgeError::Validation("entry contains backslash".into())); }
+    }
+    if !(entry.ends_with(".js") || entry.ends_with(".wasm")) {
+        return Err(BridgeError::Validation("entry must end with .js or .wasm".into()));
+    }
+    Ok(entry.to_string())
+}
+
+pub fn validate_plugin_manifest(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let name = payload.get("name").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing name".into()))?;
+    if !is_valid_plugin_id(name) { return Err(BridgeError::Validation(format!("invalid plugin name: {}", name))); }
+    let version = payload.get("version").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing version".into()))?;
+    if !is_valid_plugin_version(version) { return Err(BridgeError::Validation(format!("invalid version: {}", version))); }
+    let entry = payload.get("entry").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing entry".into()))?;
+    sanitize_plugin_path(entry)?;
+    let caps = payload.get("capabilities").and_then(|v| v.as_array()).ok_or_else(|| BridgeError::Validation("missing capabilities".into()))?;
+    if caps.is_empty() { return Err(BridgeError::Validation("capabilities empty".into())); }
+    for c in caps {
+        let s = c.as_str().ok_or_else(|| BridgeError::Validation("capability not string".into()))?;
+        if !ALLOWED_PLUGIN_CAPS.contains(&s) {
+            return Err(BridgeError::Validation(format!("invalid capability: {}", s)));
+        }
+    }
+    // bridgeVersion if present must be "1"
+    if let Some(bv) = payload.get("bridgeVersion").and_then(|v| v.as_str()) {
+        if bv != "1" { return Err(BridgeError::Validation(format!("invalid bridgeVersion: {}", bv))); }
+    }
+    Ok(())
+}
+
+pub fn validate_plugin_load_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let plugin_id = payload.get("pluginId").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing pluginId".into()))?;
+    if !is_valid_plugin_id(plugin_id) { return Err(BridgeError::Validation(format!("invalid pluginId: {}", plugin_id))); }
+    Ok(())
+}
+
+pub fn can_plugin_access(capabilities: &[String], needed: &str) -> bool {
+    capabilities.iter().any(|c| c == needed)
+}
+
+// ── AI — Phase 7 ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AiState {
+    Idle,
+    Queued,
+    Local,
+    Cloud,
+    Done,
+    Failed,
+}
+
+impl AiState {
+    pub fn can_transition(&self, next: &AiState) -> bool {
+        matches!(
+            (self, next),
+            (AiState::Idle, AiState::Queued)
+                | (AiState::Queued, AiState::Local)
+                | (AiState::Queued, AiState::Cloud)
+                | (AiState::Queued, AiState::Failed)
+                | (AiState::Local, AiState::Done)
+                | (AiState::Local, AiState::Cloud)
+                | (AiState::Local, AiState::Failed)
+                | (AiState::Cloud, AiState::Done)
+                | (AiState::Cloud, AiState::Failed)
+                | (AiState::Done, AiState::Idle)
+                | (AiState::Failed, AiState::Idle)
+        )
+    }
+}
+
+pub fn validate_ai_summarize_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let notifs = payload.get("notifications").and_then(|v| v.as_array()).ok_or_else(|| BridgeError::Validation("missing notifications".into()))?;
+    if notifs.is_empty() || notifs.len() > 20 {
+        return Err(BridgeError::Validation(format!("notifications len {} invalid 1..20", notifs.len())));
+    }
+    let mut total_chars: usize = 0;
+    for n in notifs {
+        let app = n.get("app").and_then(|v| v.as_str()).unwrap_or("");
+        let body = n.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        if app.is_empty() || app.len() > 64 { return Err(BridgeError::Validation(format!("invalid app: {}", app))); }
+        if body.len() > 500 { return Err(BridgeError::Validation(format!("body too long: {}", body.len()))); }
+        total_chars += app.len() + body.len() + 50;
+    }
+    if total_chars > 10 * 1024 {
+        return Err(BridgeError::Validation("total chars >10k".into()));
+    }
+    if let Some(max_len) = payload.get("maxLen").and_then(|v| v.as_u64()) {
+        if max_len == 0 || max_len > 1000 {
+            return Err(BridgeError::Validation(format!("invalid maxLen: {}", max_len)));
+        }
+    }
+    // requestId if present validate uuid-ish
+    if let Some(req) = payload.get("requestId").and_then(|v| v.as_str()) {
+        if req.is_empty() || req.len() > 64 { return Err(BridgeError::Validation("invalid requestId".into())); }
+    }
+    Ok(())
+}
+
+pub fn validate_ai_transcribe_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let b64 = payload.get("audio_b64").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing audio_b64".into()))?;
+    if b64.is_empty() || b64.len() > 7_000_000 {
+        return Err(BridgeError::Validation(format!("invalid audio_b64 len: {}", b64.len())));
+    }
+    if base64::engine::general_purpose::STANDARD.decode(b64).is_err() {
+        return Err(BridgeError::Validation("invalid audio_b64 base64".into()));
+    }
+    let decoded_len = base64::engine::general_purpose::STANDARD.decode(b64).unwrap().len();
+    if decoded_len > 5 * 1024 * 1024 {
+        return Err(BridgeError::Validation("audio decoded >5MB".into()));
+    }
+    if decoded_len == 0 {
+        return Err(BridgeError::Validation("audio empty".into()));
+    }
+    let fmt = payload.get("format").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(fmt, "opus" | "wav" | "mp3" | "m4a") {
+        return Err(BridgeError::Validation(format!("invalid format: {}", fmt)));
+    }
+    if let Some(lang) = payload.get("lang").and_then(|v| v.as_str()) {
+        if lang.len() != 2 || !lang.chars().all(|c| c.is_ascii_lowercase()) {
+            return Err(BridgeError::Validation(format!("invalid lang: {}", lang)));
+        }
+    }
+    if let Some(req) = payload.get("requestId").and_then(|v| v.as_str()) {
+        if req.is_empty() || req.len() > 64 { return Err(BridgeError::Validation("invalid requestId".into())); }
+    }
+    Ok(())
+}
+
+pub fn validate_ai_result_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let kind = payload.get("kind").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing kind".into()))?;
+    if !matches!(kind, "summarize" | "transcribe") { return Err(BridgeError::Validation(format!("invalid kind: {}", kind))); }
+    let text = payload.get("text").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing text".into()))?;
+    if text.len() > 5000 { return Err(BridgeError::Validation("text too long".into())); }
+    let model = payload.get("model").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing model".into()))?;
+    if model.is_empty() || model.len() > 64 { return Err(BridgeError::Validation("invalid model".into())); }
+    Ok(())
+}
+
+pub fn should_rate_limit_ai(timestamps: &mut Vec<i64>, now: i64, limit: usize, window_ms: i64) -> bool {
+    timestamps.retain(|&t| now - t < window_ms);
+    if timestamps.len() >= limit {
+        true
+    } else {
+        timestamps.push(now);
+        false
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

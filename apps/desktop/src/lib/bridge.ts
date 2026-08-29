@@ -54,7 +54,8 @@ export class BridgeClient {
   }
 }
 export const bridge = new BridgeClient();
-if(typeof window!=="undefined") {
+const isVitest = typeof process !== "undefined" && !!process.env.VITEST;
+if(typeof window!=="undefined" && !isVitest) {
   // defer connect to allow onState to be set by React
   setTimeout(()=>bridge.connect(), 100);
 }

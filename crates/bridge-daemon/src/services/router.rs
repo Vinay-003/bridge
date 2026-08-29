@@ -1,7 +1,7 @@
 use bridge_core::{BridgeMessage, MessageType};
 use serde_json::json;
 use std::sync::Arc;
-use crate::{pairing::PairingManager, services::{file, clipboard, notify, media, control, storage}};
+use crate::{pairing::PairingManager, services::{file, clipboard, notify, media, control, storage, relay, mesh, plugin, ai}};
 
 pub async fn route(msg: BridgeMessage, pairing: Arc<PairingManager>) -> Option<BridgeMessage> {
     match msg.typ {
@@ -139,6 +139,83 @@ pub async fn route(msg: BridgeMessage, pairing: Arc<PairingManager>) -> Option<B
         },
         MessageType::PairingSas => {
             Some(BridgeMessage::new(MessageType::PairingTrusted, json!({"trusted": true, "host": pairing.host(), "fp": pairing.fingerprint()})))
+        },
+        // Relay + Mesh Phase 6
+        MessageType::RelayAnnounce => {
+            let resp = relay::handle_relay_announce(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::RelayAnnounce, resp))
+            }
+        },
+        MessageType::RelayRelay => {
+            let resp = relay::handle_relay_relay(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::RelayRelay, resp))
+            }
+        },
+        MessageType::MeshSync => {
+            let resp = mesh::handle_mesh_sync(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else if resp.get("conflict").and_then(|v| v.as_bool()).unwrap_or(false) {
+                Some(BridgeMessage::new(MessageType::MeshConflict, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::MeshSync, resp))
+            }
+        },
+        MessageType::MeshConflict => {
+            let resp = mesh::handle_mesh_conflict(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::MeshConflict, resp))
+            }
+        },
+        // Plugin Phase 7
+        MessageType::PluginList => {
+            let resp = plugin::handle_plugin_list(msg.payload.clone()).await;
+            Some(BridgeMessage::new(MessageType::PluginList, resp))
+        },
+        MessageType::PluginLoad => {
+            let resp = plugin::handle_plugin_load(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::PluginLoad, resp))
+            }
+        },
+        MessageType::PluginEmit => {
+            let resp = plugin::handle_plugin_emit(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::PluginEmit, resp))
+            }
+        },
+        // AI Phase 7
+        MessageType::AiSummarize => {
+            let resp = ai::handle_ai_summarize(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::AiResult, resp))
+            }
+        },
+        MessageType::AiTranscribe => {
+            let resp = ai::handle_ai_transcribe(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::AiResult, resp))
+            }
+        },
+        MessageType::AiResult => {
+            let resp = ai::handle_ai_result(msg.payload.clone()).await;
+            Some(BridgeMessage::new(MessageType::AiResult, resp))
         },
         _ => None,
     }

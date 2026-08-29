@@ -114,7 +114,11 @@ async fn handle_conn(stream: TcpStream, peer: std::net::SocketAddr, tx: broadcas
                                     | MessageType::InputEvent | MessageType::InputAck
                                     | MessageType::DisplayInfo | MessageType::DisplayFrame
                                     | MessageType::ControlStart | MessageType::ControlStop
-                                    | MessageType::StorageSync | MessageType::StorageConflict => {
+                                    | MessageType::StorageSync | MessageType::StorageConflict
+                                    | MessageType::RelayAnnounce | MessageType::RelayRelay
+                                    | MessageType::MeshSync | MessageType::MeshConflict
+                                    | MessageType::PluginEmit | MessageType::PluginList | MessageType::PluginLoad
+                                    | MessageType::AiResult => {
                                         let _ = tx.send(json);
                                     },
                                     _ => {
