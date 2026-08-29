@@ -3,6 +3,7 @@ package com.bridge.android
 import android.Manifest
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,26 +17,59 @@ import com.bridge.android.ui.StatusCards
 import com.bridge.android.service.BridgeService
 
 class MainActivity : ComponentActivity() {
+    private var lastError: String? = null
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // Request perms after compose is ready (avoid crash on deny)
-        permLauncher.launch(arrayOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.POST_NOTIFICATIONS
-        ))
-        // Start FGS safely — catch SecurityException on Android 14 if perms not yet granted
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+            lastError = e.message ?: e.toString()
+            try { Toast.makeText(this, "Crash: $lastError", Toast.LENGTH_LONG).show() } catch(_:Exception){}
+            e.printStackTrace()
+        }
+        try {
+            super.onCreate(savedInstanceState)
+        } catch(e: Exception) {
+            lastError = e.message
+            Toast.makeText(this, "onCreate super failed: $e", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        // Request perms safely
+        try {
+            permLauncher.launch(arrayOf(
+                Manifest.permission.CAMERA,
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.POST_NOTIFICATIONS
+            ))
+        } catch(e: Exception) { lastError = "perm: $e" }
+
+        // Start FGS safely — catch everything
         try {
             val svc = Intent(this, BridgeService::class.java)
             if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
-        } catch (e: Exception) { e.printStackTrace() }
+        } catch (e: Exception) {
+            lastError = "FGS: $e"
+            Toast.makeText(this, "FGS start failed (will retry after perms): $e", Toast.LENGTH_LONG).show()
+        }
 
         setContent {
             MaterialTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    BridgeRoot()
+                    if(lastError!=null) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("Bridge start error", color = MaterialTheme.colorScheme.error)
+                            Text(lastError!!)
+                            Button(onClick = {
+                                try {
+                                    val svc = Intent(this@MainActivity, BridgeService::class.java)
+                                    if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
+                                    lastError = null
+                                } catch(e: Exception){ lastError = e.toString() }
+                            }) { Text("Retry start") }
+                        }
+                    } else {
+                        BridgeRoot()
+                    }
                 }
             }
         }
