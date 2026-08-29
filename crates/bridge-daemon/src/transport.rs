@@ -54,29 +54,32 @@ async fn handle_conn(stream: TcpStream, peer: std::net::SocketAddr, tx: broadcas
         }
     };
     if n > 0 && buf[0..n].starts_with(b"GET ") {
-        // Simple HTTP response for /qr or /status
         let req = String::from_utf8_lossy(&buf[0..n]);
-        let body = if req.contains("GET /qr") || req.contains("GET / ") {
-            serde_json::json!({
-                "qr": pairing.qr_payload(),
-                "host": pairing.host(),
-                "port": 8443,
-                "fp": pairing.fingerprint(),
-                "sas": pairing.sas_preview(),
-                "device_id": pairing.device_id()
-            }).to_string()
-        } else if req.contains("GET /status") {
-            serde_json::to_string(&services::status::collect_status()).unwrap()
-        } else {
-            serde_json::json!({"ok": true}).to_string()
-        };
-        let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
-        let _ = stream.into_std().map(|s| {
-            use std::io::Write;
-            let mut s = s;
-            let _ = s.write_all(resp.as_bytes());
-        });
-        return;
+        // Only treat as HTTP if it's NOT a WebSocket upgrade
+        let is_ws = req.to_ascii_lowercase().contains("upgrade: websocket");
+        if !is_ws {
+            let body = if req.contains("GET /qr") || req.contains("GET / ") {
+                serde_json::json!({
+                    "qr": pairing.qr_payload(),
+                    "host": pairing.host(),
+                    "port": 8443,
+                    "fp": pairing.fingerprint(),
+                    "sas": pairing.sas_preview(),
+                    "device_id": pairing.device_id()
+                }).to_string()
+            } else if req.contains("GET /status") {
+                serde_json::to_string(&services::status::collect_status()).unwrap()
+            } else {
+                serde_json::json!({"ok": true}).to_string()
+            };
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+            let _ = stream.into_std().map(|s| {
+                use std::io::Write;
+                let mut s = s;
+                let _ = s.write_all(resp.as_bytes());
+            });
+            return;
+        }
     }
 
     let ws = match accept_async(stream).await {
