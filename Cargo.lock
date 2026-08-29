@@ -191,6 +191,7 @@ dependencies = [
  "arboard",
  "base64",
  "bridge-core",
+ "chrono",
  "clap",
  "directories",
  "futures-util",
