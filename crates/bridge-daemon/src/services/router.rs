@@ -1,7 +1,7 @@
 use bridge_core::{BridgeMessage, MessageType};
 use serde_json::json;
 use std::sync::Arc;
-use crate::{pairing::PairingManager, services::{file, clipboard, notify, media, control}};
+use crate::{pairing::PairingManager, services::{file, clipboard, notify, media, control, storage}};
 
 pub async fn route(msg: BridgeMessage, pairing: Arc<PairingManager>) -> Option<BridgeMessage> {
     match msg.typ {
@@ -75,6 +75,57 @@ pub async fn route(msg: BridgeMessage, pairing: Arc<PairingManager>) -> Option<B
         MessageType::ControlStop => {
             let resp = control::handle_control_stop(msg.payload.clone()).await;
             Some(BridgeMessage::new(MessageType::ControlStop, resp))
+        },
+        // Storage Phase 5
+        MessageType::StorageLs => {
+            let resp = storage::handle_storage_ls(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::StorageLs, resp))
+            }
+        },
+        MessageType::StorageStat => {
+            let resp = storage::handle_storage_stat(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::StorageStat, resp))
+            }
+        },
+        MessageType::StorageMkdir => {
+            let resp = storage::handle_storage_mkdir(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::StorageMkdir, resp))
+            }
+        },
+        MessageType::StorageRm => {
+            let resp = storage::handle_storage_rm(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::StorageRm, resp))
+            }
+        },
+        MessageType::StorageSync => {
+            let resp = storage::handle_storage_sync(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else if resp.get("conflict").and_then(|v| v.as_bool()).unwrap_or(false) {
+                Some(BridgeMessage::new(MessageType::StorageConflict, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::StorageSync, resp))
+            }
+        },
+        MessageType::StorageConflict => {
+            let resp = storage::handle_storage_conflict(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::StorageConflict, resp))
+            }
         },
         MessageType::PairingHello => {
             Some(BridgeMessage::new(MessageType::PairingTrusted, json!({

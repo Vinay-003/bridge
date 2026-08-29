@@ -42,6 +42,13 @@ pub enum MessageType {
     #[serde(rename = "display.frame")] DisplayFrame,
     #[serde(rename = "control.start")] ControlStart,
     #[serde(rename = "control.stop")] ControlStop,
+    // storage — Phase 5 Storage Deep
+    #[serde(rename = "storage.ls")] StorageLs,
+    #[serde(rename = "storage.stat")] StorageStat,
+    #[serde(rename = "storage.mkdir")] StorageMkdir,
+    #[serde(rename = "storage.rm")] StorageRm,
+    #[serde(rename = "storage.sync")] StorageSync,
+    #[serde(rename = "storage.conflict")] StorageConflict,
     // error
     #[serde(rename = "error")] Error,
 }
@@ -239,6 +246,242 @@ pub fn validate_control_start_payload(payload: &serde_json::Value) -> Result<(),
         }
     }
     Ok(())
+}
+
+// ── Storage Deep — Phase 5 ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StorageState {
+    Idle,
+    Scanning,
+    Syncing,
+    Conflict,
+    Done,
+}
+
+impl StorageState {
+    pub fn can_transition(&self, next: &StorageState) -> bool {
+        matches!(
+            (self, next),
+            (StorageState::Idle, StorageState::Scanning)
+                | (StorageState::Idle, StorageState::Done)
+                | (StorageState::Scanning, StorageState::Syncing)
+                | (StorageState::Scanning, StorageState::Done)
+                | (StorageState::Syncing, StorageState::Conflict)
+                | (StorageState::Syncing, StorageState::Done)
+                | (StorageState::Syncing, StorageState::Idle)
+                | (StorageState::Conflict, StorageState::Syncing)
+                | (StorageState::Conflict, StorageState::Idle)
+                | (StorageState::Done, StorageState::Idle)
+        )
+    }
+}
+
+pub fn validate_storage_path(path: &str) -> Result<(), BridgeError> {
+    if path.is_empty() {
+        return Err(BridgeError::Validation("path empty".into()));
+    }
+    if path.len() > 4096 {
+        return Err(BridgeError::Validation("path too long".into()));
+    }
+    if path.contains('\0') {
+        return Err(BridgeError::Validation("path contains NUL".into()));
+    }
+    // allow "/" root; otherwise check for traversal
+    if path != "/" {
+        for seg in path.split('/') {
+            if seg.is_empty() || seg == "." {
+                continue;
+            }
+            if seg == ".." {
+                return Err(BridgeError::Validation(format!("path traversal: {}", path)));
+            }
+            if seg.len() > 255 {
+                return Err(BridgeError::Validation("segment too long".into()));
+            }
+        }
+        // reject double traversal like "/a/../../b"
+        // Already covered by seg check; additionally check ".." substring not inside?
+        if path.contains("..") {
+            // Ensure no ".." as segment already, but be strict
+            let mut segs: Vec<&str> = Vec::new();
+            for seg in path.split('/') {
+                if seg.is_empty() || seg == "." { continue; }
+                if seg == ".." {
+                    return Err(BridgeError::Validation(format!("path traversal: {}", path)));
+                }
+                segs.push(seg);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn sanitize_storage_path(path: &str) -> Result<String, BridgeError> {
+    validate_storage_path(path)?;
+    if path == "/" || path.is_empty() {
+        return Ok(String::new());
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        // already validated no ".."
+        parts.push(seg);
+    }
+    Ok(parts.join("/"))
+}
+
+pub fn validate_storage_ls_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let path = payload.get("path").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing path".into()))?;
+    validate_storage_path(path)?;
+    Ok(())
+}
+
+pub fn validate_storage_mkdir_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let path = payload.get("path").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing path".into()))?;
+    validate_storage_path(path)?;
+    if path == "/" {
+        return Err(BridgeError::Validation("cannot mkdir root".into()));
+    }
+    Ok(())
+}
+
+pub fn validate_storage_rm_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let path = payload.get("path").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing path".into()))?;
+    validate_storage_path(path)?;
+    if path == "/" {
+        return Err(BridgeError::Validation("cannot rm root".into()));
+    }
+    Ok(())
+}
+
+pub fn validate_storage_sync_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let path = payload.get("path").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing path".into()))?;
+    validate_storage_path(path)?;
+    if path == "/" {
+        return Err(BridgeError::Validation("cannot sync root".into()));
+    }
+    let sha = payload.get("sha256").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing sha256".into()))?;
+    if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(BridgeError::Validation(format!("invalid sha256: {}", sha)));
+    }
+    let offset = payload.get("offset").and_then(|v| v.as_u64()).ok_or_else(|| BridgeError::Validation("missing offset".into()))?;
+    let size = payload.get("size").and_then(|v| v.as_u64()).ok_or_else(|| BridgeError::Validation("missing size".into()))?;
+    if size == 0 {
+        return Err(BridgeError::Validation("size 0".into()));
+    }
+    if offset >= size {
+        return Err(BridgeError::Validation(format!("offset {} >= size {}", offset, size)));
+    }
+    let total = payload.get("total").and_then(|v| v.as_u64()).ok_or_else(|| BridgeError::Validation("missing total".into()))?;
+    let index = payload.get("index").and_then(|v| v.as_u64()).ok_or_else(|| BridgeError::Validation("missing index".into()))?;
+    if total == 0 {
+        return Err(BridgeError::Validation("total 0".into()));
+    }
+    if index >= total {
+        return Err(BridgeError::Validation(format!("index {} >= total {}", index, total)));
+    }
+    // Validate offset alignment: must be index * CHUNK_SIZE (1MB) except maybe but we enforce
+    const CHUNK: u64 = 1024 * 1024;
+    if offset != index * CHUNK && !(index == total - 1 && offset % CHUNK == 0) {
+        // Allow last chunk offset to be index*CHUNK; but we also enforce offset == index*CHUNK strictly
+        if offset != index * CHUNK {
+            return Err(BridgeError::Validation(format!("offset {} != index {} * chunk {}", offset, index, CHUNK)));
+        }
+    }
+    if size > 50 * 1024 * 1024 * 1024 {
+        return Err(BridgeError::Validation("size > 50GiB".into()));
+    }
+    // vectorClock optional: validate if present
+    if let Some(vc) = payload.get("vectorClock").and_then(|v| v.as_object()) {
+        for (k, v) in vc {
+            if k.is_empty() || k.len() > 64 {
+                return Err(BridgeError::Validation(format!("invalid vector key: {}", k)));
+            }
+            if !k.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                return Err(BridgeError::Validation(format!("invalid vector key chars: {}", k)));
+            }
+            if v.as_u64().is_none() {
+                return Err(BridgeError::Validation(format!("invalid vector value for {}: {}", k, v)));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_storage_stat_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let path = payload.get("path").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing path".into()))?;
+    validate_storage_path(path)?;
+    Ok(())
+}
+
+pub fn validate_storage_conflict_payload(payload: &serde_json::Value) -> Result<(), BridgeError> {
+    let path = payload.get("path").and_then(|v| v.as_str()).ok_or_else(|| BridgeError::Validation("missing path".into()))?;
+    validate_storage_path(path)?;
+    let res = payload.get("resolution").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(res, "lww" | "rename" | "manual") {
+        return Err(BridgeError::Validation(format!("invalid resolution: {}", res)));
+    }
+    Ok(())
+}
+
+pub fn vector_clock_dominates(a: &std::collections::HashMap<String, u64>, b: &std::collections::HashMap<String, u64>) -> bool {
+    // a dominates b if for all keys in b, a[k] >= b[k], and exists at least one strictly greater
+    // Keys only in a count as b[k]=0
+    let mut all_ge = true;
+    let mut strictly_greater = false;
+    for (k, bv) in b {
+        let av = a.get(k).copied().unwrap_or(0);
+        if av < *bv {
+            all_ge = false;
+            break;
+        }
+        if av > *bv {
+            strictly_greater = true;
+        }
+    }
+    if !all_ge {
+        return false;
+    }
+    // check keys only in a where a[k] > 0 => greater
+    for (k, av) in a {
+        if !b.contains_key(k) && *av > 0 {
+            strictly_greater = true;
+            break;
+        }
+    }
+    // also if a has extra keys with >0 it's greater; if sizes equal and all equal, not dominates
+    strictly_greater
+}
+
+pub fn is_vector_concurrent(a: &std::collections::HashMap<String, u64>, b: &std::collections::HashMap<String, u64>) -> bool {
+    if vectors_equal(a, b) {
+        return false;
+    }
+    !vector_clock_dominates(a, b) && !vector_clock_dominates(b, a)
+}
+
+fn vectors_equal(a: &std::collections::HashMap<String, u64>, b: &std::collections::HashMap<String, u64>) -> bool {
+    let mut keys = std::collections::HashSet::new();
+    for k in a.keys() { keys.insert(k); }
+    for k in b.keys() { keys.insert(k); }
+    for k in keys {
+        if a.get(k).copied().unwrap_or(0) != b.get(k).copied().unwrap_or(0) {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn vector_clock_merge(a: &std::collections::HashMap<String, u64>, b: &std::collections::HashMap<String, u64>) -> std::collections::HashMap<String, u64> {
+    let mut out = a.clone();
+    for (k, bv) in b {
+        let av = out.get(k).copied().unwrap_or(0);
+        out.insert(k.clone(), (*bv).max(av));
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

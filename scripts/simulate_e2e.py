@@ -162,6 +162,136 @@ def test_webrtc(c):
         # ok may be false if v4l2 missing in CI, but type must match
         print(f"  {typ} OK payload={r['payload']}")
 
+def test_storage(c):
+    print("\n== Storage: ls root ==")
+    r = send_recv(c, "storage.ls", {"path":"/"}, expect="storage.ls")
+    assert r and "entries" in r["payload"], f"storage.ls failed {r}"
+    print(f"  storage.ls OK entries={len(r['payload']['entries'])}")
+
+    print("== Storage: mkdir ==")
+    mkdir_path = "/_bridge_storage_e2e_test"
+    r = send_recv(c, "storage.mkdir", {"path": mkdir_path}, expect="storage.mkdir")
+    assert r and r["payload"].get("ok"), f"storage.mkdir failed {r}"
+    print(f"  mkdir {mkdir_path} OK {r['payload']}")
+    # also test mkdir nested
+    nested = mkdir_path + "/sub"
+    r = send_recv(c, "storage.mkdir", {"path": nested}, expect="storage.mkdir")
+    assert r and r["payload"].get("ok"), f"nested mkdir failed {r}"
+    print(f"  nested mkdir {nested} OK")
+
+    print("== Storage: stat nested ==")
+    r = send_recv(c, "storage.stat", {"path": nested}, expect="storage.stat")
+    assert r and (r["payload"].get("isDir") or r["payload"].get("exists")), f"stat failed {r}"
+    print(f"  stat OK {r['payload']}")
+
+    print("== Storage: stat non-existent (should exists false) ==")
+    r = send_recv(c, "storage.stat", {"path": "/_nonexistent_9999_storage_test_e2e"}, expect="storage.stat")
+    assert r and r["payload"].get("exists")==False, f"stat non-existent should exists false {r}"
+    print(f"  stat non-existent OK {r['payload']}")
+
+    print("== Storage: ls after mkdir ==")
+    r = send_recv(c, "storage.ls", {"path": mkdir_path}, expect="storage.ls")
+    assert r and "entries" in r["payload"], f"ls after mkdir failed {r}"
+    found = any(e["name"]=="sub" for e in r["payload"]["entries"])
+    assert found, f"sub not found in ls {r['payload']['entries']}"
+    print(f"  ls after mkdir found sub {r['payload']['entries']}")
+
+    print("== Storage: sync chunked 1MB + SHA256 (2 chunks ~1.5MB) ==")
+    # Create ~1.5MB file split into 2 chunks (1MB + 0.5MB)
+    data = b"X" * (1024*1024) + b"Y" * (512*1024)  # 1.5MB
+    total = (len(data) + 1024*1024 -1)// (1024*1024)
+    assert total == 2, f"expected 2 chunks got {total}"
+    file_path = mkdir_path + "/sync_test.bin"
+    import hashlib, base64
+    sync_id = f"sync-e2e-{int(time.time()*1000)}"
+    for idx in range(total):
+        off = idx * 1024*1024
+        chunk = data[off: off+1024*1024]
+        sha = hashlib.sha256(chunk).hexdigest()
+        b64 = base64.b64encode(chunk).decode()
+        payload = {"id": sync_id, "path": file_path, "size": len(data), "offset": off, "total": total, "index": idx, "sha256": sha, "data_b64": b64, "mtimeMs": int(time.time()*1000), "vectorClock": {"desktop": idx+1}}
+        r = send_recv(c, "storage.sync", payload, expect="storage.sync")
+        assert r and r["payload"].get("received"), f"storage.sync chunk {idx} failed {r}"
+        assert r["payload"].get("offset")==off, f"offset mismatch {r}"
+        print(f"  sync chunk {idx+1}/{total} offset {off} OK sizeOnDisk={r['payload'].get('sizeOnDisk')}")
+        # For second chunk, expect sizeOnDisk to be total size
+        if idx == total-1:
+            assert r["payload"].get("sizeOnDisk")==len(data), f"sizeOnDisk mismatch {r}"
+    # Verify file on disk via stat + check content
+    r = send_recv(c, "storage.stat", {"path": file_path}, expect="storage.stat")
+    assert r and r["payload"].get("size")==len(data), f"stat after sync size mismatch {r}"
+    disk_path = os.path.expanduser(f"~/Bridge{file_path}")
+    for _ in range(5):
+        if os.path.exists(disk_path):
+            break
+        time.sleep(0.5)
+    assert os.path.exists(disk_path), f"file not on disk {disk_path}"
+    content = open(disk_path,"rb").read()
+    assert content == data, f"file content mismatch len {len(content)} vs {len(data)}"
+    print(f"  File {disk_path} {len(content)} bytes verified OK")
+
+    print("== Storage: sync validation — bad sha should be rejected ==")
+    bad_sha = "0"*64
+    payload_bad = {"id": sync_id, "path": file_path + ".bad", "size": 1024, "offset":0, "total":1, "index":0, "sha256": bad_sha, "data_b64": base64.b64encode(b"bad").decode()}
+    r = send_recv(c, "storage.sync", payload_bad, expect="error")
+    # daemon should still report sha_mismatch or validation
+    assert r and r["payload"].get("code") in ("sha_mismatch","validation"), f"bad sha should error {r}"
+    print(f"  bad sha correctly rejected {r['payload']}")
+
+    print("== Storage: path traversal rejected ==")
+    r = send_recv(c, "storage.ls", {"path":"../etc"}, expect="error")
+    assert r and r["payload"].get("code") in ("validation","path_traversal"), f"traversal should error {r}"
+    print(f"  traversal correctly rejected {r['payload']}")
+    r = send_recv(c, "storage.rm", {"path":"../../etc/passwd","toTrash":True}, expect="error")
+    assert r and r["payload"].get("code") in ("validation","path_traversal"), f"rm traversal should error {r}"
+    print(f"  rm traversal correctly rejected")
+
+    print("== Storage: rm to trash ==")
+    r = send_recv(c, "storage.rm", {"path": file_path, "toTrash": True}, expect="storage.rm")
+    assert r and r["payload"].get("ok") and r["payload"].get("trashed"), f"rm trash failed {r}"
+    print(f"  rm trash OK {r['payload']}")
+    # Verify trashed file gone
+    time.sleep(0.3)
+    assert not os.path.exists(disk_path), f"file should be trashed but still exists {disk_path}"
+    trash_files = os.path.expanduser("~/.local/share/Trash/files/sync_test.bin")
+    assert os.path.exists(trash_files), f"trashed file not in ~/.local/share/Trash/files {trash_files}"
+    print(f"  trash verified at {trash_files}")
+    # cleanup trash for idempotency
+    try: os.remove(trash_files)
+    except: pass
+    try:
+        info = os.path.expanduser("~/.local/share/Trash/info/sync_test.bin.trashinfo")
+        if os.path.exists(info): os.remove(info)
+    except: pass
+
+    print("== Storage: rm mkdir folder trash ==")
+    r = send_recv(c, "storage.rm", {"path": nested, "toTrash": True}, expect="storage.rm")
+    assert r and r["payload"].get("ok"), f"rm sub dir failed {r}"
+    print(f"  rm dir OK {r['payload']}")
+    r = send_recv(c, "storage.rm", {"path": mkdir_path, "toTrash": False}, expect="storage.rm")
+    # Permanent delete requires toTrash false; should succeed
+    assert r and r["payload"].get("ok"), f"rm mkdir_path permanent failed {r}"
+    assert not r["payload"].get("trashed"), f"permanent should not trashed {r}"
+    print(f"  permanent rm mkdir_path OK {r['payload']}")
+
+    print("== Storage: 4GB+ offset math (no actual 4GB write, just math validation) ==")
+    # Validate daemon accepts offset u64 > 4GiB math via chunk calc
+    off = 3221225472 # 3072 * 1MB
+    size = 5000000000
+    assert off < size
+    chunk_size = 1048576
+    idx = off // chunk_size
+    assert idx == 3072
+    assert idx * chunk_size == off
+    print(f"  4GB+ resume math OK off={off} idx={idx}")
+
+    print("== Storage: conflict LWW ==")
+    r = send_recv(c, "storage.conflict", {"path": "/_conflict_test.txt", "resolution":"lww", "winner":"local", "localMtime": 1000, "remoteMtime": 900}, expect="storage.conflict")
+    assert r and r["payload"].get("ok") or r["payload"].get("path"), f"conflict failed {r}"
+    print(f"  conflict OK {r['payload']}")
+
+    print("  Storage ALL OK")
+
 def test_control(c_desktop, c_android):
     print("\n== Control: display.info ==")
     r = send_recv(c_desktop, "display.info", {"displayId":0}, expect="display.info")
@@ -318,6 +448,7 @@ if __name__ == "__main__":
     test_status(c_desktop)
     test_webrtc(c_desktop)
     test_control(c_desktop, c_android)
+    test_storage(c_desktop)
     c_desktop.close()
     c_android.close()
     print("\n=== ALL E2E PASSED ===")

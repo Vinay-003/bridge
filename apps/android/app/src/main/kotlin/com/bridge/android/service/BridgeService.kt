@@ -262,6 +262,60 @@ class BridgeService : Service() {
             } else if (type == "display.frame") {
                 // relay? For now just ack
                 sendWs("display.frame", payload, origId)
+            } else if (type == "storage.ls") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleLs(this, payload)
+                    sendWs("storage.ls", res, origId)
+                } catch (e: Exception) {
+                    val isTraversal = e.message?.contains("traversal") == true
+                    val code = if (isTraversal) "path_traversal" else if (e.message?.contains("missing_permission")==true) "missing_permission" else "validation"
+                    sendWs("error", org.json.JSONObject().apply { put("code", code); put("message", e.message ?: "storage.ls failed"); put("details", payload) }, origId)
+                }
+            } else if (type == "storage.stat") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleStat(this, payload)
+                    sendWs("storage.stat", res, origId)
+                } catch (e: Exception) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","validation"); put("message", e.message) }, origId)
+                }
+            } else if (type == "storage.mkdir") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleMkdir(this, payload)
+                    sendWs("storage.mkdir", res, origId)
+                } catch (e: Exception) {
+                    val code = if (e.message?.contains("missing_permission")==true) "missing_permission" else "validation"
+                    sendWs("error", org.json.JSONObject().apply { put("code", code); put("message", e.message) }, origId)
+                }
+            } else if (type == "storage.rm") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleRm(this, payload)
+                    sendWs("storage.rm", res, origId)
+                } catch (e: Exception) {
+                    val code = when {
+                        e.message?.contains("saf_revoked")==true -> "saf_revoked"
+                        e.message?.contains("trash_denied")==true -> "trash_denied"
+                        e.message?.contains("not_found")==true -> "not_found"
+                        else -> "validation"
+                    }
+                    sendWs("error", org.json.JSONObject().apply { put("code", code); put("message", e.message) }, origId)
+                }
+            } else if (type == "storage.sync") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleSyncChunk(this, payload)
+                    sendWs("storage.sync", res, origId)
+                } catch (e: Exception) {
+                    val msg = e.message ?: "sync failed"
+                    val code = when {
+                        msg.contains("sha_mismatch") -> "sha_mismatch"
+                        msg.contains("traversal") -> "path_traversal"
+                        msg.contains("validation") -> "validation"
+                        else -> "io"
+                    }
+                    sendWs("error", org.json.JSONObject().apply { put("code", code); put("message", msg); put("details", payload) }, origId)
+                }
+            } else if (type == "storage.conflict") {
+                // Phone receives conflict resolution from desktop/daemon
+                sendWs("storage.conflict", payload, origId)
             }
         } catch(_: Exception) {}
     }
