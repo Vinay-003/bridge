@@ -1,22 +1,19 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
 }
 android {
     namespace = "com.bridge.android"
     compileSdk = 34
     defaultConfig {
         applicationId = "com.bridge.android"
-        minSdk = 26  // MVP: Android 8+ (covers 10+ with easier perms)
+        minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-    buildTypes {
-        release { isMinifyEnabled = false }
-    }
+    buildTypes { release { isMinifyEnabled = false } }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -35,25 +32,16 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.navigation:navigation-compose:2.8.4")
-    // CameraX
     implementation("androidx.camera:camera-core:1.3.4")
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
-    // QR
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
-    // WebSocket
     implementation("org.java-websocket:Java-WebSocket:1.5.7")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // DataStore
     implementation("androidx.datastore:datastore-preferences:1.1.1")
-    // WorkManager
     implementation("androidx.work:work-runtime-ktx:2.9.0")
-    // Security
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
-    // QR generate on Android for display
-    implementation("com.github.alexzaitsev:qrcode:1.1.3")
-
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
