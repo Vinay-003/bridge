@@ -510,16 +510,17 @@ def test_control(c_desktop, c_android):
 
 def test_relay(c):
     print("\n== Relay: announce (E2E opaque) ==")
-    import base64
+    import base64, os, uuid
     blob = base64.b64encode(b"\x42"*64).decode()
-    r = send_recv(c, "relay.announce", {"deviceId":"linux-abc-123","blob":blob,"ts":int(time.time()*1000),"fp":"aabbcc112233","mappedAddr":"1.2.3.4:5678","stunServer":"stun.l.google.com:19302","nonce":"aabbccdd"}, expect="relay.announce")
+    fresh_nonce = base64.b64encode(os.urandom(4)).decode()[:8]
+    r = send_recv(c, "relay.announce", {"deviceId":"linux-abc-123","blob":blob,"ts":int(time.time()*1000),"fp":"aabbcc112233","mappedAddr":"1.2.3.4:5678","stunServer":"stun.l.google.com:19302","nonce":fresh_nonce}, expect="relay.announce")
     assert r and r["payload"].get("ok"), f"relay.announce failed {r}"
     assert r["payload"].get("opaque")==True, f"relay not opaque {r}"
     print(f"  relay.announce OK opaque={r['payload']['opaque']} relayNonce={r['payload'].get('relayNonce')}")
     assert "stun.l.google.com:19302" in str(r["payload"].get("stunHint",{})) or r["payload"].get("stunHint") is not None
     print("  STUN stun.l.google.com:19302 OK")
     print("== Relay: replay nonce should be rejected ==")
-    r2 = send_recv(c, "relay.announce", {"deviceId":"linux-abc-123","blob":blob,"ts":int(time.time()*1000),"fp":"aabbcc112233","nonce":"aabbccdd"}, expect="error")
+    r2 = send_recv(c, "relay.announce", {"deviceId":"linux-abc-123","blob":blob,"ts":int(time.time()*1000),"fp":"aabbcc112233","nonce":fresh_nonce}, expect="error")
     assert r2 and r2["payload"].get("code")=="replay", f"replay should error {r2}"
     print(f"  replay correctly rejected {r2['payload']}")
     print("== Relay: relay.relay opaque ==")
