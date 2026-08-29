@@ -3,13 +3,10 @@ package com.bridge.android
 import android.Manifest
 import android.content.Intent
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -23,16 +20,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Request perms after compose is ready (avoid crash on deny)
         permLauncher.launch(arrayOf(
             Manifest.permission.CAMERA,
             Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.POST_NOTIFICATIONS,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_ADVERTISE,
-            Manifest.permission.NEARBY_WIFI_DEVICES
+            Manifest.permission.POST_NOTIFICATIONS
         ))
-        startForegroundService(Intent(this, BridgeService::class.java))
+        // Start FGS safely — catch SecurityException on Android 14 if perms not yet granted
+        try {
+            val svc = Intent(this, BridgeService::class.java)
+            if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
+        } catch (e: Exception) { e.printStackTrace() }
 
         setContent {
             MaterialTheme {

@@ -32,7 +32,7 @@
 
         <service android:name=".service.BridgeService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|mediaProjection|microphone|camera"/>
+            android:foregroundServiceType="connectedDevice"/>
 
         <service android:name=".service.BridgeNotificationListener"
             android:label="Bridge"
