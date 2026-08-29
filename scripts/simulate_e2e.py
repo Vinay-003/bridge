@@ -512,7 +512,7 @@ def test_relay(c):
     print("\n== Relay: announce (E2E opaque) ==")
     import base64, os, uuid
     blob = base64.b64encode(b"\x42"*64).decode()
-    fresh_nonce = base64.b64encode(os.urandom(4)).decode()[:8]
+    fresh_nonce = os.urandom(4).hex()[:8]
     r = send_recv(c, "relay.announce", {"deviceId":"linux-abc-123","blob":blob,"ts":int(time.time()*1000),"fp":"aabbcc112233","mappedAddr":"1.2.3.4:5678","stunServer":"stun.l.google.com:19302","nonce":fresh_nonce}, expect="relay.announce")
     assert r and r["payload"].get("ok"), f"relay.announce failed {r}"
     assert r["payload"].get("opaque")==True, f"relay not opaque {r}"
@@ -525,7 +525,8 @@ def test_relay(c):
     print(f"  replay correctly rejected {r2['payload']}")
     print("== Relay: relay.relay opaque ==")
     blob2 = base64.b64encode(b"\x42"*64).decode()
-    r = send_recv(c, "relay.relay", {"to":"phone-xyz","from":"linux-abc","blob":blob2,"ts":int(time.time()*1000),"nonce":"11223344"}, expect="relay.relay")
+    fresh2 = os.urandom(4).hex()[:8]
+    r = send_recv(c, "relay.relay", {"to":"phone-xyz","from":"linux-abc","blob":blob2,"ts":int(time.time()*1000),"nonce":fresh2}, expect="relay.relay")
     assert r and r["payload"].get("ok"), f"relay.relay failed {r}"
     assert r["payload"].get("opaque")==True
     assert r["payload"].get("queued")==False
