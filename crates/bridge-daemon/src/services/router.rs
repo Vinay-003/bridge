@@ -1,7 +1,7 @@
 use bridge_core::{BridgeMessage, MessageType};
 use serde_json::json;
 use std::sync::Arc;
-use crate::{pairing::PairingManager, services::{file, clipboard, notify, media}};
+use crate::{pairing::PairingManager, services::{file, clipboard, notify, media, telephony}};
 
 pub async fn route(msg: BridgeMessage, pairing: Arc<PairingManager>) -> Option<BridgeMessage> {
     match msg.typ {
@@ -31,6 +31,52 @@ pub async fn route(msg: BridgeMessage, pairing: Arc<PairingManager>) -> Option<B
         },
         MessageType::WebrtcAnswer | MessageType::WebrtcIce => {
             Some(BridgeMessage::new(MessageType::WebrtcAnswer, msg.payload))
+        },
+        // Telephony Phase 3
+        MessageType::SmsList => {
+            let resp = telephony::handle_sms_list(msg.payload.clone()).await;
+            Some(BridgeMessage::new(MessageType::SmsList, resp))
+        },
+        MessageType::SmsSend => {
+            let resp = telephony::handle_sms_send(msg.payload.clone()).await;
+            // If error code, return as Error type, else SmsSend ack
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::SmsSend, resp))
+            }
+        },
+        MessageType::SmsReceived => {
+            let resp = telephony::handle_sms_received(msg.payload.clone()).await;
+            Some(BridgeMessage::new(MessageType::SmsReceived, resp))
+        },
+        MessageType::CallStart => {
+            let resp = telephony::handle_call_start(msg.payload.clone()).await;
+            if resp.get("code").is_some() && resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::CallStart, resp))
+            }
+        },
+        MessageType::CallAnswer => {
+            let resp = telephony::handle_call_answer(msg.payload.clone()).await;
+            Some(BridgeMessage::new(MessageType::CallAnswer, resp))
+        },
+        MessageType::CallHangup => {
+            let resp = telephony::handle_call_hangup(msg.payload.clone()).await;
+            Some(BridgeMessage::new(MessageType::CallHangup, resp))
+        },
+        MessageType::CallAudio => {
+            let resp = telephony::handle_call_audio(msg.payload.clone()).await;
+            if resp.get("error").is_some() {
+                Some(BridgeMessage::new(MessageType::Error, resp))
+            } else {
+                Some(BridgeMessage::new(MessageType::CallAudio, resp))
+            }
+        },
+        MessageType::CallLog => {
+            let resp = telephony::handle_call_log(msg.payload.clone()).await;
+            Some(BridgeMessage::new(MessageType::CallLog, resp))
         },
         MessageType::PairingHello => {
             Some(BridgeMessage::new(MessageType::PairingTrusted, json!({
