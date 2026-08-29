@@ -70,14 +70,22 @@ fun PairingScreen() {
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Pair with Linux", style = MaterialTheme.typography.headlineSmall)
         Text("1. Linux shows QR in Bridge tray (or /tmp/bridge-qr.png)\n2. Tap Scan QR\n3. Confirm 6-digit SAS matches desktop\n4. Done — auto-reconnect via mDNS/BLE", style = MaterialTheme.typography.bodyMedium)
-        Button(onClick = {
-            val opts = ScanOptions()
-            opts.setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            opts.setPrompt("Scan Bridge QR")
-            opts.setBeepEnabled(true)
-            opts.setOrientationLocked(false)
-            launcher.launch(opts)
-        }) { Text("Scan QR") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                val opts = ScanOptions()
+                opts.setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                opts.setPrompt("Scan Bridge QR")
+                opts.setBeepEnabled(true)
+                opts.setOrientationLocked(false)
+                launcher.launch(opts)
+            }) { Text("Scan QR") }
+            OutlinedButton(onClick = {
+                // Stop / Disconnect
+                try { ctx.stopService(Intent(ctx, com.bridge.android.service.BridgeService::class.java)) } catch(_:Exception){}
+                connected = false
+                Toast.makeText(ctx, "Bridge stopped", Toast.LENGTH_SHORT).show()
+            }) { Text("Stop") }
+        }
         if(qr.isNotEmpty()) {
             Card { Column(Modifier.padding(12.dp)) {
                 Text(qr, style = MaterialTheme.typography.bodySmall)
@@ -102,6 +110,10 @@ fun PairingScreen() {
         Text("USB fallback: adb forward tcp:8443 tcp:8443", style = MaterialTheme.typography.labelSmall)
         Button(onClick = { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Enable Notification Access") }
         Button(onClick = { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }) { Text("Disable Battery Optimization") }
+        OutlinedButton(onClick = {
+            try { ctx.stopService(Intent(ctx, com.bridge.android.service.BridgeService::class.java)) } catch(_:Exception){}
+            Toast.makeText(ctx, "Bridge service stopped — notification will disappear", Toast.LENGTH_LONG).show()
+        }) { Text("Stop Bridge Service") }
     }
 }
 

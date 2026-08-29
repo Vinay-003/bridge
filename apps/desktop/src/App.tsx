@@ -12,8 +12,12 @@ export default function App(){
   const connected = useBridgeStore(s=>s.connected)
   const [tab, setTab] = useState<"overview"|"files"|"media">("overview")
   useEffect(()=>{
-    bridge.onState = (s)=> useBridgeStore.getState().set({connected: s==="connected"})
-    if("Notification" in window && Notification.permission==="default") Notification.requestPermission()
+    const handler = (s:"disconnected"|"connecting"|"connected")=> useBridgeStore.getState().set({connected: s==="connected"})
+    bridge.onState = handler
+    // if already connected before handler set, sync
+    if(bridge.ws && bridge.ws.readyState===1) handler("connected")
+    // request status immediately
+    bridge.send("pairing.hello", { client: "desktop-app" })
   },[])
   return (
     <div className="min-h-screen bg-bridge-bg text-white">
@@ -29,7 +33,12 @@ export default function App(){
           <div className="flex items-center gap-3">
             <span className={`h-2 w-2 rounded-full ${connected?'bg-emerald-400 animate-pulse':'bg-zinc-600'}`} />
             <span className="text-xs text-bridge-muted">{connected?'WS 8443 connected':'disconnected — daemon needed'}</span>
-            <nav className="ml-4 flex gap-1 bg-bridge-card border border-bridge-border rounded-full p-1">
+            <button onClick={()=>{
+              if(bridge.ws) bridge.ws.close()
+              bridge.send("pairing.hello", {})
+              setTimeout(()=>bridge.connect(), 500)
+            }} className="text-xs border border-bridge-border text-white px-3 py-1 rounded-full">Reconnect</button>
+            <nav className="ml-2 flex gap-1 bg-bridge-card border border-bridge-border rounded-full p-1">
               {(["overview","files","media"] as const).map(t=>(
                 <button key={t} onClick={()=>setTab(t)} className={`px-4 py-1.5 rounded-full text-xs capitalize ${tab===t?'bg-white text-black':'text-bridge-muted'}`}>{t}</button>
               ))}
