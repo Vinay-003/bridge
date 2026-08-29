@@ -14,10 +14,6 @@ import java.net.URI
 import android.app.RemoteInput
 import android.service.notification.StatusBarNotification
 import android.content.Context
-import com.bridge.android.telephony.CallHandler
-import com.bridge.android.telephony.CallLogHandler
-import com.bridge.android.telephony.SmsHandler
-import org.json.JSONObject
 
 class BridgeService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -66,19 +62,6 @@ class BridgeService : Service() {
         }
         shouldReconnect = true
         intent?.let {
-            // call allow via notification tap
-            if (it.getBooleanExtra("action_call_allow", false)) {
-                val number = it.getStringExtra("call_number") ?: ""
-                val subIdRaw = it.getIntExtra("call_subId", -1)
-                val subId = if (subIdRaw == -1) null else subIdRaw
-                val origId = it.getStringExtra("call_origId") ?: java.util.UUID.randomUUID().toString()
-                // cancel confirm notification
-                try { getSystemService(NotificationManager::class.java).cancel(99) } catch(_:Exception){}
-                scope.launch {
-                    val res = CallHandler.placeCall(this@BridgeService, number, subId)
-                    if (res.has("error")) sendWs("error", res, origId) else sendWs("call.start", res, origId)
-                }
-            }
             val h = it.getStringExtra("host")
             val p = it.getIntExtra("port", -1)
             if(h!=null) {
@@ -172,9 +155,9 @@ class BridgeService : Service() {
         }.also { try { it.connect() } catch (_: Exception) {} }
     }
 
-    private fun sendWs(type: String, payload: JSONObject, origId: String? = null) {
+    private fun sendWs(type: String, payload: org.json.JSONObject, origId: String? = null) {
         try {
-            val msg = JSONObject().apply {
+            val msg = org.json.JSONObject().apply {
                 put("v", 1)
                 put("id", origId ?: java.util.UUID.randomUUID().toString())
                 put("type", type)
@@ -186,7 +169,6 @@ class BridgeService : Service() {
             if (wsClient?.isOpen == true) {
                 wsClient?.send(txt)
             } else {
-                // ephemeral fallback
                 val host = getSharedPreferences("bridge",0).getString("host","192.168.1.36") ?: currentHost
                 val port = getSharedPreferences("bridge",0).getInt("port",8443)
                 Thread {
@@ -206,10 +188,10 @@ class BridgeService : Service() {
 
     private fun handle(json: String) {
         try {
-            val obj = JSONObject(json)
+            val obj = org.json.JSONObject(json)
             val type = obj.optString("type")
-            val id = obj.optString("id")
-            val payload = obj.optJSONObject("payload") ?: JSONObject()
+            val payload = obj.optJSONObject("payload") ?: org.json.JSONObject()
+            val origId = obj.optString("id", java.util.UUID.randomUUID().toString())
             if (type == "clipboard.sync") {
                 val b64 = payload.optString("data_b64")
                 if (b64.isNotEmpty()) {
@@ -226,116 +208,182 @@ class BridgeService : Service() {
                 val action = payload.optString("action")
                 val text = payload.optString("text")
                 handleNotifyAction(key, action, text)
-            } else if (type == "webrtc.offer") {
-                // For now echo answer; full WebRTC with CameraX would be here
             } else if (type == "sms.list") {
-                // Phone side: list inbox, then send back sms.list via WS
-                scope.launch {
-                    try {
-                        val limit = payload.optInt("limit", 50)
-                        val offset = payload.optInt("offset", 0)
-                        val subId = if (payload.has("subscriptionId") && !payload.isNull("subscriptionId")) payload.optInt("subscriptionId") else null
-                        val res = SmsHandler.listInbox(this@BridgeService, limit, offset, subId)
-                        sendWs("sms.list", res, id)
-                    } catch(e: Exception){
-                        sendWs("error", JSONObject().apply{ put("code","sms_failed"); put("message", e.message) }, id)
-                    }
+                try {
+                    val limit = payload.optInt("limit", 50)
+                    val offset = payload.optInt("offset", 0)
+                    val subId = if (payload.has("subscriptionId")) payload.optInt("subscriptionId") else null
+                    val res = com.bridge.android.telephony.SmsHandler.listInbox(this, limit, offset, subId)
+                    sendWs("sms.list", res, origId)
+                } catch (e: Exception) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","sms_failed"); put("message", e.message) }, origId)
                 }
             } else if (type == "sms.send") {
-                scope.launch {
-                    try {
-                        val address = payload.optString("address")
-                        val body = payload.optString("body")
-                        val subId = if (payload.has("subscriptionId") && !payload.isNull("subscriptionId")) payload.optInt("subscriptionId") else null
-                        val res = SmsHandler.sendSms(this@BridgeService, address, body, subId)
-                        // If success, send ack as sms.send, then also broadcast sms.received
-                        if (res.has("error")) {
-                            sendWs("error", res, id)
-                        } else {
-                            sendWs("sms.send", res, id)
-                            // also notify desktop that new sent message appears
-                            val received = JSONObject().apply {
-                                put("address", address); put("body", body); put("date", System.currentTimeMillis()); put("subscriptionId", subId)
-                            }
-                            sendWs("sms.received", received)
-                        }
-                    } catch(e: Exception){
-                        sendWs("error", JSONObject().apply{ put("code","sms_failed"); put("message", e.message) }, id)
-                    }
+                try {
+                    val address = payload.optString("address")
+                    val body = payload.optString("body")
+                    val subId2 = if (payload.has("subscriptionId")) payload.optInt("subscriptionId") else null
+                    val res = com.bridge.android.telephony.SmsHandler.sendSms(this, address, body, subId2)
+                    sendWs("sms.send", res, origId)
+                    // also broadcast sms.received
+                    val received = org.json.JSONObject().apply { put("address", payload.optString("address")); put("body", payload.optString("body")); put("ts", System.currentTimeMillis()) }
+                    sendWs("sms.received", received, origId)
+                } catch (e: Exception) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","sms_failed"); put("message", e.message) }, origId)
                 }
             } else if (type == "call.start") {
-                scope.launch {
-                    try {
-                        val number = payload.optString("number")
-                        val subId = if (payload.has("subscriptionId") && !payload.isNull("subscriptionId")) payload.optInt("subscriptionId") else null
-                        // Per-call explicit tap: show notification prompt if device locked? For now enforce unlock
-                        if (CallHandler.isDeviceLocked(this@BridgeService)) {
-                            val err = JSONObject().apply{ put("code","device_locked"); put("message","Call requires device unlock + tap"); }
-                            sendWs("error", err, id)
-                            // Show notification to user to unlock and tap
-                            showCallConfirmNotification(number, subId, id)
-                        } else {
-                            // Show allow-once notification, then auto-place after tap (simulate immediate allow for now)
-                            // In real UI, user taps Allow; here we place directly and set requires_tap flag
-                            val res = CallHandler.placeCall(this@BridgeService, number, subId)
-                            if (res.has("error")) sendWs("error", res, id) else sendWs("call.start", res, id)
-                        }
-                    } catch(e: Exception){
-                        sendWs("error", JSONObject().apply{ put("code","call_failed"); put("message", e.message) }, id)
-                    }
+                try {
+                    // Per-call explicit tap: show notification prompt
+                    val number = payload.optString("number")
+                    if (number.isEmpty()) throw Exception("invalid number")
+                    val subId = if (payload.has("subscriptionId")) payload.optInt("subscriptionId") else null
+                    // Enforce unlock? For now enforce notification tap
+                    val res = com.bridge.android.telephony.CallHandler.placeCall(this, number, subId)
+                    if (res.has("error")) sendWs("error", res, origId) else sendWs("call.start", res, origId)
+                } catch (e: Exception) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","call_failed"); put("message", e.message) }, origId)
                 }
             } else if (type == "call.answer") {
-                scope.launch {
-                    val callId = payload.optString("callId")
-                    val res = CallHandler.answerCall(this@BridgeService, callId)
-                    if (res.has("error")) sendWs("error", res, id) else sendWs("call.answer", res, id)
+                try {
+                    val callId = payload.optString("callId", null)
+                    val res = com.bridge.android.telephony.CallHandler.answerCall(this, callId)
+                    sendWs("call.answer", res, origId)
+                } catch (e: Exception) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","call_failed"); put("message", e.message) }, origId)
                 }
             } else if (type == "call.hangup") {
-                scope.launch {
-                    val callId = payload.optString("callId")
-                    val res = CallHandler.hangupCall(this@BridgeService, callId)
-                    if (res.has("error")) sendWs("error", res, id) else sendWs("call.hangup", res, id)
+                try {
+                    val callId2 = payload.optString("callId", null)
+                    val res = com.bridge.android.telephony.CallHandler.hangupCall(this, callId2)
+                    sendWs("call.hangup", res, origId)
+                } catch (e: Exception) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","call_failed"); put("message", e.message) }, origId)
                 }
             } else if (type == "call.audio") {
-                scope.launch {
-                    val res = CallHandler.handleCallAudio(this@BridgeService, payload)
-                    if (res.has("error")) sendWs("error", res, id) else sendWs("call.audio", res, id)
+                try {
+                    val res = com.bridge.android.telephony.CallHandler.handleCallAudio(this, payload)
+                    if (res.has("error")) sendWs("error", res, origId) else sendWs("call.audio", res, origId)
+                } catch (e: Exception) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","call_failed"); put("message", e.message) }, origId)
                 }
             } else if (type == "call.log") {
-                scope.launch {
-                    try {
-                        val limit = payload.optInt("limit", 50)
-                        val res = CallLogHandler.queryCallLog(this@BridgeService, limit)
-                        if (res.has("error")) sendWs("error", res, id) else sendWs("call.log", res, id)
-                    } catch(e: Exception){
-                        sendWs("error", JSONObject().apply{ put("code","call_log_failed"); put("message", e.message) }, id)
+                try {
+                    val limitLog = payload.optInt("limit", 50)
+                    val res = com.bridge.android.telephony.CallLogHandler.queryCallLog(this, limitLog)
+                    sendWs("call.log", res, origId)
+                } catch (e: Exception) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","call_failed"); put("message", e.message) }, origId)
+                }
+            } else if (type == "webrtc.offer") {
+                // For now echo answer; full WebRTC with CameraX would be here
+            } else if (type == "input.event") {
+                val svc = com.bridge.android.control.BridgeAccessibilityService.instance
+                if (svc == null) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","missing_permission"); put("message","Accessibility service not enabled"); put("details", payload) }, origId)
+                } else {
+                    val res = svc.handleInputEvent(payload)
+                    if (res.has("error")) {
+                        // map to error envelope
+                        val code = res.optString("code","validation")
+                        val err = org.json.JSONObject().apply { put("code", code); put("message", res.optString("error")); put("details", res) }
+                        sendWs("error", err, origId)
+                    } else {
+                        // input.ack
+                        sendWs("input.ack", res, origId)
                     }
                 }
+            } else if (type == "control.start") {
+                val svc = com.bridge.android.control.BridgeAccessibilityService.instance
+                val displayId = payload.optInt("displayId", 0)
+                if (svc == null) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","missing_permission"); put("message","Accessibility service not enabled") }, origId)
+                } else {
+                    val res = svc.handleControlStart(displayId)
+                    if (res.has("error")) {
+                        sendWs("error", org.json.JSONObject().apply { put("code", res.optString("code")); put("message", res.optString("error")) }, origId)
+                    } else {
+                        sendWs("control.start", res, origId)
+                        // also push display.info immediately
+                        try {
+                            val info = svc.pushDisplayInfo()
+                            sendWs("display.info", info)
+                        } catch(_:Exception){}
+                    }
+                }
+            } else if (type == "control.stop") {
+                val svc = com.bridge.android.control.BridgeAccessibilityService.instance
+                val displayId = payload.optInt("displayId", 0)
+                val reason = payload.optString("reason","user")
+                val res = svc?.handleControlStop(displayId, reason) ?: org.json.JSONObject().apply { put("ok",true); put("state","DISABLED"); put("displayId", displayId) }
+                sendWs("control.stop", res, origId)
+            } else if (type == "display.info") {
+                val svc = com.bridge.android.control.BridgeAccessibilityService.instance
+                val info = try { svc?.pushDisplayInfo() } catch(_:Exception){ null } ?: org.json.JSONObject().apply {
+                    put("displays", org.json.JSONArray().apply {
+                        put(org.json.JSONObject().apply { put("displayId",0); put("width",1080); put("height",2400); put("dpi",440); put("density",2.75); put("rotation",0); put("name","Built-in"); put("isPrimary",true) })
+                    })
+                    put("primaryDisplayId",0)
+                }
+                sendWs("display.info", info, origId)
+            } else if (type == "display.frame") {
+                // relay? For now just ack
+                sendWs("display.frame", payload, origId)
+            } else if (type == "storage.ls") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleLs(this, payload)
+                    sendWs("storage.ls", res, origId)
+                } catch (e: Exception) {
+                    val isTraversal = e.message?.contains("traversal") == true
+                    val code = if (isTraversal) "path_traversal" else if (e.message?.contains("missing_permission")==true) "missing_permission" else "validation"
+                    sendWs("error", org.json.JSONObject().apply { put("code", code); put("message", e.message ?: "storage.ls failed"); put("details", payload) }, origId)
+                }
+            } else if (type == "storage.stat") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleStat(this, payload)
+                    sendWs("storage.stat", res, origId)
+                } catch (e: Exception) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","validation"); put("message", e.message) }, origId)
+                }
+            } else if (type == "storage.mkdir") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleMkdir(this, payload)
+                    sendWs("storage.mkdir", res, origId)
+                } catch (e: Exception) {
+                    val code = if (e.message?.contains("missing_permission")==true) "missing_permission" else "validation"
+                    sendWs("error", org.json.JSONObject().apply { put("code", code); put("message", e.message) }, origId)
+                }
+            } else if (type == "storage.rm") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleRm(this, payload)
+                    sendWs("storage.rm", res, origId)
+                } catch (e: Exception) {
+                    val code = when {
+                        e.message?.contains("saf_revoked")==true -> "saf_revoked"
+                        e.message?.contains("trash_denied")==true -> "trash_denied"
+                        e.message?.contains("not_found")==true -> "not_found"
+                        else -> "validation"
+                    }
+                    sendWs("error", org.json.JSONObject().apply { put("code", code); put("message", e.message) }, origId)
+                }
+            } else if (type == "storage.sync") {
+                try {
+                    val res = com.bridge.android.storage.StorageHandler.handleSyncChunk(this, payload)
+                    sendWs("storage.sync", res, origId)
+                } catch (e: Exception) {
+                    val msg = e.message ?: "sync failed"
+                    val code = when {
+                        msg.contains("sha_mismatch") -> "sha_mismatch"
+                        msg.contains("traversal") -> "path_traversal"
+                        msg.contains("validation") -> "validation"
+                        else -> "io"
+                    }
+                    sendWs("error", org.json.JSONObject().apply { put("code", code); put("message", msg); put("details", payload) }, origId)
+                }
+            } else if (type == "storage.conflict") {
+                // Phone receives conflict resolution from desktop/daemon
+                sendWs("storage.conflict", payload, origId)
             }
         } catch(_: Exception) {}
-    }
-
-    private fun showCallConfirmNotification(number: String, subId: Int?, origId: String) {
-        try {
-            val chId = "bridge_calls"
-            val nm = getSystemService(NotificationManager::class.java)
-            try { nm.createNotificationChannel(NotificationChannel(chId, "Bridge Calls", NotificationManager.IMPORTANCE_HIGH)) } catch(_:Exception){}
-            val allowIntent = Intent(this, BridgeService::class.java).apply {
-                putExtra("action_call_allow", true)
-                putExtra("call_number", number)
-                putExtra("call_subId", subId ?: -1)
-                putExtra("call_origId", origId)
-            }
-            val pi = PendingIntent.getService(this, 99, allowIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            val notif = NotificationCompat.Builder(this, chId)
-                .setContentTitle("Bridge wants to call")
-                .setContentText(number)
-                .setSmallIcon(android.R.drawable.sym_action_call)
-                .addAction(android.R.drawable.sym_action_call, "Allow once", pi)
-                .setAutoCancel(true)
-                .build()
-            nm.notify(99, notif)
-        } catch(_:Exception){}
     }
 
     private fun handleNotifyAction(key: String, action: String, text: String) {

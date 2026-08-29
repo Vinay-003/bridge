@@ -108,13 +108,20 @@ async fn handle_conn(stream: TcpStream, peer: std::net::SocketAddr, tx: broadcas
                             let resp = services::router::route(bmsg, pairing.clone()).await;
                             if let Some(r) = resp {
                                 let json = r.to_json();
-                                // Broadcast telephony + clipboard/notify to all other clients, else direct
+                                // Broadcast to all other clients for shared state, else direct reply
                                 match r.typ {
                                     MessageType::ClipboardSync | MessageType::NotifyNew | MessageType::NotifyAction
                                     | MessageType::SmsList | MessageType::SmsSend | MessageType::SmsReceived
                                     | MessageType::CallStart | MessageType::CallAnswer | MessageType::CallHangup
                                     | MessageType::CallAudio | MessageType::CallLog
-                                    | MessageType::StatusPush => {
+                                    | MessageType::InputEvent | MessageType::InputAck
+                                    | MessageType::DisplayInfo | MessageType::DisplayFrame
+                                    | MessageType::ControlStart | MessageType::ControlStop
+                                    | MessageType::StorageLs | MessageType::StorageStat | MessageType::StorageMkdir | MessageType::StorageRm | MessageType::StorageSync | MessageType::StorageConflict
+                                    | MessageType::RelayAnnounce | MessageType::RelayRelay
+                                    | MessageType::MeshSync | MessageType::MeshConflict
+                                    | MessageType::PluginList | MessageType::PluginLoad | MessageType::PluginEmit
+                                    | MessageType::AiResult | MessageType::StatusPush => {
                                         let _ = tx.send(json);
                                     },
                                     _ => {

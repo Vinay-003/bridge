@@ -5,7 +5,12 @@ pub mod status;
 pub mod router;
 pub mod media;
 pub mod telephony;
-
+pub mod control;
+pub mod storage;
+pub mod relay;
+pub mod mesh;
+pub mod plugin;
+pub mod ai;
 use bridge_core::{BridgeMessage, MessageType};
 use serde_json::json;
 

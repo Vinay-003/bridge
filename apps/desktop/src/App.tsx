@@ -8,16 +8,19 @@ import { Clipboard } from './components/Clipboard'
 import { Notifications } from './components/Notifications'
 import { Media } from './components/Media'
 import { Telephony } from './components/Telephony'
+import { RemoteControl } from './components/RemoteControl'
+import { Storage } from './components/Storage'
+import { Plugins } from './components/Plugins'
+
+type Tab = "overview"|"files"|"media"|"telephony"|"control"|"storage"|"plugins"
 
 export default function App(){
   const connected = useBridgeStore(s=>s.connected)
-  const [tab, setTab] = useState<"overview"|"files"|"media"|"telephony">("overview")
+  const [tab, setTab] = useState<Tab>("overview")
   useEffect(()=>{
     const handler = (s:"disconnected"|"connecting"|"connected")=> useBridgeStore.getState().set({connected: s==="connected"})
     bridge.onState = handler
-    // if already connected before handler set, sync
     if(bridge.ws && bridge.ws.readyState===1) handler("connected")
-    // request status immediately
     bridge.send("pairing.hello", { client: "desktop-app" })
   },[])
   return (
@@ -40,8 +43,8 @@ export default function App(){
               setTimeout(()=>bridge.connect(), 500)
             }} className="text-xs border border-bridge-border text-white px-3 py-1 rounded-full">Reconnect</button>
             <nav className="ml-2 flex gap-1 bg-bridge-card border border-bridge-border rounded-full p-1">
-              {(["overview","files","media","telephony"] as const).map(t=>(
-                <button key={t} onClick={()=>setTab(t)} className={`px-4 py-1.5 rounded-full text-xs capitalize ${tab===t?'bg-white text-black':'text-bridge-muted'}`}>{t}</button>
+              {(["overview","files","media","telephony","control","storage","plugins"] as const).map(t=>(
+                <button key={t} onClick={()=>setTab(t as Tab)} className={`px-3 py-1.5 rounded-full text-xs capitalize ${tab===t?'bg-white text-black':'text-bridge-muted'}`}>{t}</button>
               ))}
             </nav>
           </div>
@@ -62,13 +65,20 @@ export default function App(){
               </div>
             </div>
             <Media />
+            <Telephony />
+            <RemoteControl />
+            <Storage />
+            <Plugins />
           </>
         )}
         {tab==="files" && <div className="space-y-6"><Status /><Files /><Clipboard /></div>}
         {tab==="media" && <div className="space-y-6"><Media /><Status /></div>}
         {tab==="telephony" && <div className="space-y-6"><Status /><Telephony /></div>}
+        {tab==="control" && <div className="space-y-6"><Status /><RemoteControl /></div>}
+        {tab==="storage" && <div className="space-y-6"><Status /><Storage /><Files /></div>}
+        {tab==="plugins" && <div className="space-y-6"><Status /><Plugins /></div>}
         <footer className="text-center text-xs text-bridge-muted py-6 border-t border-bridge-border mt-8">
-          Bridge MVP · Tauri+Rust daemon on 8443 · mDNS _bridge._tcp · QUIC bulk · WebRTC media · v4l2loopback /dev/video10 · PipeWire Bridge Mic
+          Bridge · Tauri+Rust daemon on 8443 · mDNS _bridge._tcp · QUIC bulk · WebRTC media · v4l2loopback /dev/video10 · PipeWire Bridge Mic · Telephony · Control · Storage · Relay · Plugins
         </footer>
       </main>
     </div>

@@ -1,0 +1,10 @@
+{
+  "name": "example-translate",
+  "version": "0.1.0",
+  "displayName": "Translate Demo",
+  "description": "Mock translate on notify.new: append [translated] and clipboard sync mock",
+  "entry": "index.js",
+  "capabilities": ["notify", "clipboard"],
+  "author": "Bridge Example",
+  "bridgeVersion": "1"
+}
