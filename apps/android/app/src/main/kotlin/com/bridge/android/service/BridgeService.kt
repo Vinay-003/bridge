@@ -155,11 +155,43 @@ class BridgeService : Service() {
         }.also { try { it.connect() } catch (_: Exception) {} }
     }
 
+    private fun sendWs(type: String, payload: org.json.JSONObject, origId: String? = null) {
+        try {
+            val msg = org.json.JSONObject().apply {
+                put("v", 1)
+                put("id", origId ?: java.util.UUID.randomUUID().toString())
+                put("type", type)
+                put("ts", System.currentTimeMillis())
+                put("nonce", (0..999999).random().toString())
+                put("payload", payload)
+            }
+            val txt = msg.toString()
+            if (wsClient?.isOpen == true) {
+                wsClient?.send(txt)
+            } else {
+                val host = getSharedPreferences("bridge",0).getString("host","192.168.1.36") ?: currentHost
+                val port = getSharedPreferences("bridge",0).getInt("port",8443)
+                Thread {
+                    try {
+                        val c = object: WebSocketClient(URI("ws://$host:$port")) {
+                            override fun onOpen(h: ServerHandshake?) { send(txt); close() }
+                            override fun onMessage(m: String?) {}
+                            override fun onClose(c: Int, r: String?, re: Boolean) {}
+                            override fun onError(e: Exception?) {}
+                        }
+                        c.connectBlocking()
+                    } catch(_:Exception){}
+                }.start()
+            }
+        } catch(_:Exception){}
+    }
+
     private fun handle(json: String) {
         try {
             val obj = org.json.JSONObject(json)
             val type = obj.optString("type")
             val payload = obj.optJSONObject("payload") ?: org.json.JSONObject()
+            val origId = obj.optString("id", java.util.UUID.randomUUID().toString())
             if (type == "clipboard.sync") {
                 val b64 = payload.optString("data_b64")
                 if (b64.isNotEmpty()) {
@@ -178,7 +210,58 @@ class BridgeService : Service() {
                 handleNotifyAction(key, action, text)
             } else if (type == "webrtc.offer") {
                 // For now echo answer; full WebRTC with CameraX would be here
-                // Could trigger CameraX or MediaProjection depending on payload type
+            } else if (type == "input.event") {
+                val svc = com.bridge.android.control.BridgeAccessibilityService.instance
+                if (svc == null) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","missing_permission"); put("message","Accessibility service not enabled"); put("details", payload) }, origId)
+                } else {
+                    val res = svc.handleInputEvent(payload)
+                    if (res.has("error")) {
+                        // map to error envelope
+                        val code = res.optString("code","validation")
+                        val err = org.json.JSONObject().apply { put("code", code); put("message", res.optString("error")); put("details", res) }
+                        sendWs("error", err, origId)
+                    } else {
+                        // input.ack
+                        sendWs("input.ack", res, origId)
+                    }
+                }
+            } else if (type == "control.start") {
+                val svc = com.bridge.android.control.BridgeAccessibilityService.instance
+                val displayId = payload.optInt("displayId", 0)
+                if (svc == null) {
+                    sendWs("error", org.json.JSONObject().apply { put("code","missing_permission"); put("message","Accessibility service not enabled") }, origId)
+                } else {
+                    val res = svc.handleControlStart(displayId)
+                    if (res.has("error")) {
+                        sendWs("error", org.json.JSONObject().apply { put("code", res.optString("code")); put("message", res.optString("error")) }, origId)
+                    } else {
+                        sendWs("control.start", res, origId)
+                        // also push display.info immediately
+                        try {
+                            val info = svc.pushDisplayInfo()
+                            sendWs("display.info", info)
+                        } catch(_:Exception){}
+                    }
+                }
+            } else if (type == "control.stop") {
+                val svc = com.bridge.android.control.BridgeAccessibilityService.instance
+                val displayId = payload.optInt("displayId", 0)
+                val reason = payload.optString("reason","user")
+                val res = svc?.handleControlStop(displayId, reason) ?: org.json.JSONObject().apply { put("ok",true); put("state","DISABLED"); put("displayId", displayId) }
+                sendWs("control.stop", res, origId)
+            } else if (type == "display.info") {
+                val svc = com.bridge.android.control.BridgeAccessibilityService.instance
+                val info = try { svc?.pushDisplayInfo() } catch(_:Exception){ null } ?: org.json.JSONObject().apply {
+                    put("displays", org.json.JSONArray().apply {
+                        put(org.json.JSONObject().apply { put("displayId",0); put("width",1080); put("height",2400); put("dpi",440); put("density",2.75); put("rotation",0); put("name","Built-in"); put("isPrimary",true) })
+                    })
+                    put("primaryDisplayId",0)
+                }
+                sendWs("display.info", info, origId)
+            } else if (type == "display.frame") {
+                // relay? For now just ack
+                sendWs("display.frame", payload, origId)
             }
         } catch(_: Exception) {}
     }

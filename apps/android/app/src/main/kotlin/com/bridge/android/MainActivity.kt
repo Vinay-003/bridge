@@ -12,6 +12,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.bridge.android.ui.ControlScreen
 import com.bridge.android.ui.PairingScreen
 import com.bridge.android.ui.StatusCards
 import com.bridge.android.service.BridgeService
@@ -79,7 +80,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun BridgeRoot() {
     var tab by remember { mutableStateOf(0) }
-    val tabs = listOf("Pair","Status","Files","Media")
+    val tabs = listOf("Pair","Status","Files","Media","Control")
     Column(Modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = tab) {
             tabs.forEachIndexed { i, t -> Tab(selected = tab==i, onClick = {tab=i}, text = {Text(t)}) }
@@ -89,6 +90,7 @@ fun BridgeRoot() {
             1 -> StatusCards()
             2 -> FilesScreen()
             3 -> MediaScreen()
+            4 -> ControlScreen()
         }
     }
 }
