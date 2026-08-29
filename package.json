@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "workspaces": ["apps/desktop"],
+  "scripts": {
+    "dev": "pnpm -r dev",
+    "build": "pnpm -r build",
+    "check": "cargo check && pnpm -r exec tsc --noEmit",
+    "test": "cargo test && pnpm -r test"
+  }
+}

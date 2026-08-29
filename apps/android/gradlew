@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
+exec gradle "$@" 2>/dev/null || echo "Gradle not found. Install via: sdk install gradle 8.7  OR run: bash gradlew via wrapper will download gradle-8.7-bin.zip. Ensure ANDROID_HOME is set."

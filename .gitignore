@@ -19,3 +19,6 @@ Thumbs.db
 # tauri
 src-tauri/target/
 # docx dup already handled
+apps/desktop/dist/
+apps/desktop/node_modules/
+target/
