@@ -108,9 +108,12 @@ async fn handle_conn(stream: TcpStream, peer: std::net::SocketAddr, tx: broadcas
                             let resp = services::router::route(bmsg, pairing.clone()).await;
                             if let Some(r) = resp {
                                 let json = r.to_json();
-                                // Broadcast clipboard/notify to all other clients, else direct
+                                // Broadcast clipboard/notify/control to all clients, else direct
                                 match r.typ {
-                                    MessageType::ClipboardSync | MessageType::NotifyNew | MessageType::NotifyAction => {
+                                    MessageType::ClipboardSync | MessageType::NotifyNew | MessageType::NotifyAction
+                                    | MessageType::InputEvent | MessageType::InputAck
+                                    | MessageType::DisplayInfo | MessageType::DisplayFrame
+                                    | MessageType::ControlStart | MessageType::ControlStop => {
                                         let _ = tx.send(json);
                                     },
                                     _ => {
