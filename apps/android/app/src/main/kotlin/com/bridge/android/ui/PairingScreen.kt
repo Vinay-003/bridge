@@ -27,18 +27,20 @@ fun PairingScreen() {
     var scannedHost by remember { mutableStateOf(prefs.getString("host","192.168.1.36") ?: "192.168.1.36") }
     var scannedPort by remember { mutableStateOf(prefs.getInt("port",8443)) }
 
-    LaunchedEffect(Unit) {
+    // Poll service status without blocking main thread — just reflect last saved host/port
+    LaunchedEffect(scannedHost, scannedPort) {
         while(true) {
-            kotlinx.coroutines.delay(2000)
+            kotlinx.coroutines.delay(3000)
             try {
-                val c = WebSocketClientForCheck(URI("ws://$scannedHost:$scannedPort"))
-                var ok=false
-                c.onOpenCallback = { ok=true; connected=true }
-                c.connectBlocking()
-                kotlinx.coroutines.delay(1200)
-                c.close()
-                if(!ok) connected=false
-            } catch(_: Exception) { connected=false }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    java.net.Socket().use { s ->
+                        s.connect(java.net.InetSocketAddress(scannedHost, scannedPort), 1200)
+                        connected = true
+                    }
+                }
+            } catch(_: Exception) {
+                // keep previous state; don't flip to false aggressively — service may be reconnecting
+            }
         }
     }
 
