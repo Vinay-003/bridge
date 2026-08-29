@@ -38,7 +38,24 @@ class BridgeService : Service() {
         connect()
     }
 
+    private var shouldReconnect = true
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "STOP") {
+            shouldReconnect = false
+            wsClient?.close()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // allow explicit STOP via extra stop=true
+        if (intent?.getBooleanExtra("stop", false) == true) {
+            shouldReconnect = false
+            wsClient?.close()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        shouldReconnect = true
         intent?.let {
             val h = it.getStringExtra("host")
             val p = it.getIntExtra("port", -1)
@@ -46,10 +63,8 @@ class BridgeService : Service() {
                 currentHost = h
                 if(p!=-1) currentPort = p
                 getSharedPreferences("bridge",0).edit().putString("host", currentHost).putInt("port", currentPort).apply()
-                // update notification
                 val nm = getSystemService(NotificationManager::class.java)
                 nm.notify(1, buildNotif("Bridge running — $currentHost:$currentPort"))
-                // reconnect
                 wsClient?.close()
                 connect()
             }
@@ -74,20 +89,41 @@ class BridgeService : Service() {
     }
 
     private fun connect() {
+        if (!shouldReconnect) return
         val uri = URI("ws://$currentHost:$currentPort")
         wsClient?.close()
         wsClient = object : WebSocketClient(uri) {
             override fun onOpen(h: ServerHandshake?) {}
             override fun onMessage(m: String?) { m?.let { handle(it) } }
             override fun onClose(code: Int, reason: String?, remote: Boolean) {
-                scope.launch { delay(3000); connect() }
+                if (shouldReconnect) scope.launch { delay(3000); connect() }
             }
             override fun onError(ex: Exception?) {}
         }.also { try { it.connect() } catch (_: Exception) {} }
     }
 
-    private fun handle(json: String) { }
+    private fun handle(json: String) {
+        try {
+            val obj = org.json.JSONObject(json)
+            val type = obj.optString("type")
+            val payload = obj.optJSONObject("payload") ?: org.json.JSONObject()
+            if (type == "clipboard.sync") {
+                val b64 = payload.optString("data_b64")
+                if (b64.isNotEmpty()) {
+                    val source = payload.optString("source")
+                    if (source == "desktop") {
+                        val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                        val text = String(bytes, Charsets.UTF_8)
+                        val cm = getSystemService(android.content.ClipboardManager::class.java)
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Bridge", text))
+                    }
+                }
+            } else if (type == "notify.action") {
+                // desktop wants to reply/dismiss - handled via NotificationListener if needed
+            }
+        } catch(_: Exception) {}
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { scope.cancel(); try{ wsClient?.close() }catch(_:Exception){}; super.onDestroy() }
+    override fun onDestroy() { shouldReconnect = false; scope.cancel(); try{ wsClient?.close() }catch(_:Exception){}; super.onDestroy() }
 }

@@ -82,8 +82,13 @@ fun PairingScreen() {
                 launcher.launch(opts)
             }) { Text("Scan QR") }
             OutlinedButton(onClick = {
-                // Stop / Disconnect
-                try { ctx.stopService(Intent(ctx, com.bridge.android.service.BridgeService::class.java)) } catch(_:Exception){}
+                // Stop / Disconnect — send STOP action so service doesn't restart
+                try {
+                    val stop = Intent(ctx, com.bridge.android.service.BridgeService::class.java).apply { action="STOP" }
+                    ctx.startService(stop)
+                    // also try stopService as fallback
+                    ctx.stopService(Intent(ctx, com.bridge.android.service.BridgeService::class.java))
+                } catch(_:Exception){}
                 connected = false
                 Toast.makeText(ctx, "Bridge stopped", Toast.LENGTH_SHORT).show()
             }) { Text("Stop") }
@@ -113,7 +118,12 @@ fun PairingScreen() {
         Button(onClick = { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Enable Notification Access") }
         Button(onClick = { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }) { Text("Disable Battery Optimization") }
         OutlinedButton(onClick = {
-            try { ctx.stopService(Intent(ctx, com.bridge.android.service.BridgeService::class.java)) } catch(_:Exception){}
+            try {
+                val stop = Intent(ctx, com.bridge.android.service.BridgeService::class.java).apply { action="STOP" }
+                ctx.startService(stop)
+                ctx.stopService(Intent(ctx, com.bridge.android.service.BridgeService::class.java))
+            } catch(_:Exception){}
+            connected = false
             Toast.makeText(ctx, "Bridge service stopped — notification will disappear", Toast.LENGTH_LONG).show()
         }) { Text("Stop Bridge Service") }
     }

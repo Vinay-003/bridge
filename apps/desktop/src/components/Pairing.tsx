@@ -41,11 +41,11 @@ export function Pairing() {
         <h3 className="text-white font-semibold">Pair Android</h3>
         <span className={`text-xs px-2 py-1 rounded-full ${connected?'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30':'bg-zinc-800 text-zinc-400'}`}>{connected?'Connected':'Not connected'}</span>
       </div>
-      <div className="flex gap-5">
-        <div className="bg-white p-3 rounded-xl min-w-[164px] min-h-[164px] flex items-center justify-center">
+      <div className="flex flex-col sm:flex-row gap-5">
+        <div className="bg-white p-3 rounded-xl w-fit h-fit flex items-center justify-center shrink-0 mx-auto sm:mx-0">
           {qr ? <QRCodeSVG value={qr} size={140} /> : <span className="text-xs text-zinc-500">Waiting daemon…</span>}
         </div>
-        <div className="flex-1 space-y-3">
+        <div className="flex-1 space-y-3 min-w-0">
           <p className="text-sm text-bridge-muted">On Android open Bridge → <b className="text-white">Scan QR</b>. Host <code className="text-white">{host}:8443</code>. Code refreshes on daemon restart.</p>
           <div className="bg-[#0f0f14] border border-bridge-border rounded-xl p-3 space-y-1">
             <div className="text-xs text-bridge-muted">Fingerprint</div>

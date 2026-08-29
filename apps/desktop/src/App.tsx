@@ -51,12 +51,12 @@ export default function App(){
         {tab==="overview" && (
           <>
             <Status />
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-              <div className="lg:col-span-3 space-y-6">
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+              <div className="xl:col-span-7 space-y-6 min-w-0">
                 <Pairing />
                 <Clipboard />
               </div>
-              <div className="lg:col-span-2 space-y-6">
+              <div className="xl:col-span-5 space-y-6 min-w-0">
                 <Notifications />
               </div>
             </div>

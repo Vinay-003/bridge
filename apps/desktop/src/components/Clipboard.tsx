@@ -7,10 +7,12 @@ export function Clipboard() {
   const [auto, setAuto] = useState(true)
   useEffect(()=>{
     const onSync = (m:any)=>{
+      const src = m.payload.source || ""
+      if(src==="desktop") return // ignore own echo
       const b64 = m.payload.data_b64 || ""
       try { setRemote(atob(b64)) } catch { setRemote(b64) }
-      // auto-copy to system clipboard if enabled
-      if(auto && b64) {
+      // auto-copy to system clipboard if enabled and from phone
+      if(auto && b64 && src!=="desktop") {
         try { navigator.clipboard.writeText(atob(b64)) } catch {}
       }
     }
