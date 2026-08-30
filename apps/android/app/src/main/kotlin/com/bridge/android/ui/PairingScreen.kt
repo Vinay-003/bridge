@@ -28,19 +28,13 @@ fun PairingScreen() {
     var scannedPort by remember { mutableStateOf(prefs.getInt("port",8443)) }
 
     // Poll service status without blocking main thread — just reflect last saved host/port
-    LaunchedEffect(scannedHost, scannedPort) {
+    LaunchedEffect(scannedHost, scannedPort, qr) {
         while(true) {
-            kotlinx.coroutines.delay(3000)
-            try {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    java.net.Socket().use { s ->
-                        s.connect(java.net.InetSocketAddress(scannedHost, scannedPort), 1200)
-                        connected = true
-                    }
-                }
-            } catch(_: Exception) {
-                // keep previous state; don't flip to false aggressively — service may be reconnecting
-            }
+            kotlinx.coroutines.delay(1500)
+            val hasPairing = prefs.getString("last_qr","")?.isNotEmpty() == true
+            // Use BridgeService.isConnected (actual WS open) instead of TCP check
+            val wsConnected = com.bridge.android.service.BridgeService.isConnected
+            connected = hasPairing && wsConnected
         }
     }
 
@@ -82,15 +76,15 @@ fun PairingScreen() {
                 launcher.launch(opts)
             }) { Text("Scan QR") }
             OutlinedButton(onClick = {
-                // Stop / Disconnect — send STOP action so service doesn't restart
                 try {
                     val stop = Intent(ctx, com.bridge.android.service.BridgeService::class.java).apply { action="STOP" }
                     ctx.startService(stop)
-                    // also try stopService as fallback
                     ctx.stopService(Intent(ctx, com.bridge.android.service.BridgeService::class.java))
+                    // Clear pairing so next open doesn't autoconnect — user must Scan again
+                    prefs.edit { remove("last_qr"); remove("host"); remove("port"); remove("fp"); remove("device_id") }
                 } catch(_:Exception){}
                 connected = false
-                Toast.makeText(ctx, "Bridge stopped", Toast.LENGTH_SHORT).show()
+                Toast.makeText(ctx, "Bridge stopped — scan again to reconnect", Toast.LENGTH_SHORT).show()
             }) { Text("Stop") }
         }
         if(qr.isNotEmpty()) {
@@ -122,9 +116,10 @@ fun PairingScreen() {
                 val stop = Intent(ctx, com.bridge.android.service.BridgeService::class.java).apply { action="STOP" }
                 ctx.startService(stop)
                 ctx.stopService(Intent(ctx, com.bridge.android.service.BridgeService::class.java))
+                prefs.edit { remove("last_qr"); remove("host"); remove("port") }
             } catch(_:Exception){}
             connected = false
-            Toast.makeText(ctx, "Bridge service stopped — notification will disappear", Toast.LENGTH_LONG).show()
+            Toast.makeText(ctx, "Bridge service stopped — scan again to reconnect", Toast.LENGTH_LONG).show()
         }) { Text("Stop Bridge Service") }
     }
 }

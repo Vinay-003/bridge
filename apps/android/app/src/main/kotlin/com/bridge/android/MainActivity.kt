@@ -44,13 +44,21 @@ class MainActivity : ComponentActivity() {
             ))
         } catch(e: Exception) { lastError = "perm: $e" }
 
-        // Start FGS safely — catch everything
-        try {
-            val svc = Intent(this, BridgeService::class.java)
-            if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
-        } catch (e: Exception) {
-            lastError = "FGS: $e"
-            Toast.makeText(this, "FGS start failed (will retry after perms): $e", Toast.LENGTH_LONG).show()
+        // Don't auto-start FGS unless we have a saved pairing (user has scanned QR before)
+        // This prevents "autoconnecting still, i didnt even do anything" confusion
+        val prefs = getSharedPreferences("bridge", 0)
+        val hasPairing = prefs.getString("last_qr","")?.isNotEmpty() == true
+        if (hasPairing) {
+            try {
+                val svc = Intent(this, BridgeService::class.java)
+                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
+            } catch (e: Exception) {
+                lastError = "FGS: $e"
+                Toast.makeText(this, "FGS start failed (will retry after perms): $e", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            // No pairing yet — show Pair tab, don't start service
+            lastError = null
         }
 
         setContent {

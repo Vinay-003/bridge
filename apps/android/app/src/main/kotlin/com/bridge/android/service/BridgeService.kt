@@ -16,6 +16,9 @@ import android.service.notification.StatusBarNotification
 import android.content.Context
 
 class BridgeService : Service() {
+    companion object {
+        @Volatile var isConnected: Boolean = false
+    }
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wsClient: WebSocketClient? = null
     private var currentHost = "192.168.1.36"
@@ -147,9 +150,10 @@ class BridgeService : Service() {
         val uri = URI("ws://$currentHost:$currentPort")
         wsClient?.close()
         wsClient = object : WebSocketClient(uri) {
-            override fun onOpen(h: ServerHandshake?) {}
+            override fun onOpen(h: ServerHandshake?) { isConnected = true }
             override fun onMessage(m: String?) { m?.let { handle(it) } }
             override fun onClose(code: Int, reason: String?, remote: Boolean) {
+                isConnected = false
                 if (shouldReconnect) scope.launch { delay(3000); connect() }
             }
             override fun onError(ex: Exception?) {}
@@ -402,5 +406,5 @@ class BridgeService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { shouldReconnect = false; statusJob?.cancel(); scope.cancel(); try{ wsClient?.close() }catch(_:Exception){}; super.onDestroy() }
+    override fun onDestroy() { isConnected = false; shouldReconnect = false; statusJob?.cancel(); scope.cancel(); try{ wsClient?.close() }catch(_:Exception){}; super.onDestroy() }
 }
