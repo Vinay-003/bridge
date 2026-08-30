@@ -116,6 +116,7 @@ class BridgeService : Service() {
                     val stat = java.io.File("/data").freeSpace
                     val freeGb = stat / 1024 / 1024 / 1024f
                     val payload = org.json.JSONObject().apply {
+                        put("source", "phone")
                         put("battery", org.json.JSONObject().apply { put("pct", pct); put("charging", charging); put("tempC", temp) })
                         put("ram", org.json.JSONObject().apply { put("availMb", availMb); put("totalMb", totalMb) })
                         put("storage", org.json.JSONObject().apply { put("freeGb", freeGb); put("totalGb", freeGb+50) })

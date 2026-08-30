@@ -4,7 +4,8 @@ import { bridge } from '../lib/bridge'
 import { useBridgeStore } from '../lib/store'
 
 export function Pairing() {
-  const connected = useBridgeStore(s=>s.connected)
+  const daemonConnected = useBridgeStore(s=>s.connected)
+  const phoneConnected = useBridgeStore(s=>s.phoneConnected)
   const [qr, setQr] = useState("")
   const [fp, setFp] = useState("")
   const [sas, setSas] = useState("")
@@ -39,7 +40,7 @@ export function Pairing() {
     <div className="rounded-2xl bg-bridge-card border border-bridge-border p-5">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-white font-semibold">Pair Android</h3>
-        <span className={`text-xs px-2 py-1 rounded-full ${connected?'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30':'bg-zinc-800 text-zinc-400'}`}>{connected?'Connected':'Not connected'}</span>
+        <span className={`text-xs px-2 py-1 rounded-full ${phoneConnected?'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30': daemonConnected ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-zinc-800 text-zinc-400'}`}>{phoneConnected?'Phone connected': daemonConnected?'Daemon only — no phone':'Not connected'}</span>
       </div>
       <div className="flex flex-col sm:flex-row gap-5">
         <div className="bg-white p-3 rounded-xl w-fit h-fit flex items-center justify-center shrink-0 mx-auto sm:mx-0">

@@ -15,7 +15,9 @@ import { Plugins } from './components/Plugins'
 type Tab = "overview"|"files"|"media"|"telephony"|"control"|"storage"|"plugins"
 
 export default function App(){
-  const connected = useBridgeStore(s=>s.connected)
+  const daemonConnected = useBridgeStore(s=>s.connected)
+  const phoneConnected = useBridgeStore(s=>s.phoneConnected)
+  const connected = daemonConnected
   const [tab, setTab] = useState<Tab>("overview")
   useEffect(()=>{
     const handler = (s:"disconnected"|"connecting"|"connected")=> useBridgeStore.getState().set({connected: s==="connected"})
@@ -35,8 +37,8 @@ export default function App(){
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <span className={`h-2 w-2 rounded-full ${connected?'bg-emerald-400 animate-pulse':'bg-zinc-600'}`} />
-            <span className="text-xs text-bridge-muted">{connected?'WS 8443 connected':'disconnected — daemon needed'}</span>
+            <span className={`h-2 w-2 rounded-full ${phoneConnected?'bg-emerald-400 animate-pulse': daemonConnected?'bg-amber-400 animate-pulse':'bg-zinc-600'}`} />
+            <span className="text-xs text-bridge-muted">{phoneConnected?'Phone connected — WS 8443': daemonConnected?'Daemon only — no phone':'disconnected — daemon needed'}</span>
             <button onClick={()=>{
               if(bridge.ws) bridge.ws.close()
               bridge.send("pairing.hello", {})

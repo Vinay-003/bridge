@@ -12,6 +12,7 @@ export type CallEntry = { number:string; type:string; date:number; duration:numb
 export type CallState = "IDLE"|"RINGING"|"OFFHOOK"|"HUNGUP"
 type S = {
   connected:boolean;
+  phoneConnected:boolean;
   pairing:{ qr:string; fp:string; sas:string } | null;
   status: DeviceStatus | null;
   notifs: Notif[];
@@ -25,6 +26,7 @@ type S = {
 }
 export const useBridgeStore = create<S>((set)=>({
   connected:false,
+  phoneConnected:false,
   pairing:null,
   status:null,
   notifs:[],

@@ -5,9 +5,30 @@ import { useBridgeStore } from '../lib/store'
 export function Status() {
   const s = useBridgeStore(s=>s.status)
   const connected = useBridgeStore(s=>s.connected)
+  const phoneConnected = useBridgeStore(s=>s.phoneConnected)
+  const daemonConnected = useBridgeStore(s=>s.connected)
   useEffect(()=>{
-    const onStatus = (m:any)=> useBridgeStore.getState().set({status: m.payload})
+    let phoneTimer: ReturnType<typeof setTimeout> | null = null
+    const onStatus = (m:any)=> {
+      const src = m.payload.source
+      useBridgeStore.getState().set({status: m.payload})
+      if (src === "phone") {
+        useBridgeStore.getState().set({phoneConnected: true})
+        if (phoneTimer) clearTimeout(phoneTimer)
+        phoneTimer = setTimeout(()=> useBridgeStore.getState().set({phoneConnected: false}), 12000)
+      } else if (src === "daemon" && !useBridgeStore.getState().phoneConnected) {
+        // keep phoneConnected false if only daemon status
+      }
+    }
     bridge.on("status.push", onStatus)
+    // Also handle explicit disconnect via WS close
+    const onWsState = (s:string)=> {
+      if (s === "disconnected") {
+        // don't immediately flip phone, wait for timeout
+      }
+    }
+    // poll for phone disconnect if no status for 12s
+
     // if no push after 4s, show local fallback as disconnected hint
     const t = setTimeout(()=>{
       if(!useBridgeStore.getState().status) {
@@ -16,7 +37,7 @@ export function Status() {
         }})
       }
     }, 4000)
-    return ()=> { bridge.off("status.push", onStatus); clearTimeout(t); }
+    return ()=> { bridge.off("status.push", onStatus); clearTimeout(t); if (phoneTimer) clearTimeout(phoneTimer); }
   },[])
   if(!s || s.battery.pct===0) {
     return (
