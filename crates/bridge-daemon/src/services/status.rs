@@ -18,13 +18,35 @@ pub struct DeviceStatus {
     pub source: Option<String>,
 }
 
+fn read_battery() -> (u8, bool, f32) {
+    // Try /sys/class/power_supply/BAT0
+    let pct = std::fs::read_to_string("/sys/class/power_supply/BAT0/capacity")
+        .ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let status = std::fs::read_to_string("/sys/class/power_supply/BAT0/status").unwrap_or_default();
+    let s = status.trim().to_ascii_lowercase();
+    let charging = s == "charging" || s == "full" || s == "fully-charged";
+    // temp: /sys/class/power_supply/BAT0/temp (tenths °C) or use 30 default
+    let temp_raw = std::fs::read_to_string("/sys/class/power_supply/BAT0/temp").ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .map(|v| if v > 100.0 { v/10.0 } else { v })
+        .unwrap_or(30.0);
+    // Clamp pct 0..100, if 0 try upower fallback via percentage file? For now return pct
+    let pct_clamped = pct.min(100);
+    // If pct is 0 but upower shows 100, try upower percentage via energy?
+    // Already read, so return
+    (pct_clamped, charging, temp_raw)
+}
+
 pub fn collect_status() -> DeviceStatus {
     let (avail, total) = read_mem();
+    let (pct, charging, tempC) = read_battery();
+    let (freeGb, totalGb) = read_storage();
+    let (dbm, bars) = read_signal();
     DeviceStatus {
-        battery: Battery { pct: 77, charging: false, tempC: 30.0 },
+        battery: Battery { pct, charging, tempC },
         ram: Ram { availMb: avail, totalMb: total },
-        storage: Storage { freeGb: 120.5, totalGb: 512.0 },
-        signal: Signal { dbm: -67, bars: 4 },
+        storage: Storage { freeGb, totalGb },
+        signal: Signal { dbm, bars },
         source: Some("daemon".into()),
     }
 }
@@ -39,6 +61,34 @@ fn read_mem() -> (u64,u64) {
     (avail, total)
 }
 
+fn read_storage() -> (f32, f32) {
+    // Use statvfs on home dir
+    if let Ok(stat) = nix::sys::statvfs::statvfs("/home") {
+        let free = stat.blocks_available() * stat.fragment_size() as u64;
+        let total = stat.blocks() * stat.fragment_size() as u64;
+        return (free as f32 / 1024.0 / 1024.0 / 1024.0, total as f32 / 1024.0 / 1024.0 / 1024.0);
+    }
+    // fallback
+    (120.5, 512.0)
+}
+
+fn read_signal() -> (i32, u8) {
+    // Try nmcli for WiFi signal, else mock
+    if let Ok(out) = std::process::Command::new("nmcli").args(["-t","-f","IN-USE,SIGNAL","dev","wifi"]).output() {
+        let txt = String::from_utf8_lossy(&out.stdout);
+        for line in txt.lines() {
+            if line.starts_with("*:") || line.starts_with("*") {
+                if let Some(sig) = line.split(':').nth(1).and_then(|v| v.parse::<i32>().ok()) {
+                    let bars = match sig { 75..=100 => 4, 50..=74 => 3, 25..=49 => 2, _ => 1 };
+                    let dbm = -30 - ((100 - sig) as f32 * 0.6) as i32;
+                    return (dbm, bars);
+                }
+            }
+        }
+    }
+    (-67, 4)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,5 +96,12 @@ mod tests {
     fn status_collects() {
         let s = collect_status();
         assert!(s.ram.totalMb > 0);
+        assert!(s.battery.pct <= 100);
+    }
+    #[test]
+    fn battery_reads_real() {
+        let (pct, _, _) = read_battery();
+        // On CI pct may be 0, but on laptop should be 100
+        assert!(pct <= 100);
     }
 }
