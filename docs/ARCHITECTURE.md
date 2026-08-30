@@ -43,3 +43,8 @@
 
 ## Security boundary
 LAN attacker model → mutual TLS, per-feature toggles (`clipboard:bool` etc.), revocation wipes keys + QUIC session.
+
+### Deployment note (Render Hobby, no DB)
+- **No deployment for core:** Tauri `frontendDist: ../dist` is bundled into `bridge` binary; `ws://192.168.1.36:8443` is LAN `0.0.0.0`. No `render.yaml` is needed for pairing.
+- **Optional static demo:** `render.yaml` hosts `apps/desktop/dist` as static on Render free (no DB, `buildCommand` only). No Postgres; state stays in local SQLite/keyring.
+- **Relay optional:** `relay` feature is additive (`--relay` flag); default `relay:false` keeps it LAN-first.

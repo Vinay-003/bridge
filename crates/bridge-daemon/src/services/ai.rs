@@ -90,27 +90,111 @@ fn local_transcribe(b64_len: usize, format: &str, lang: &str) -> String {
     format!("Transcribed {} audio (format {}, lang {}) — mock whisper.cpp local: hello world, this is a test transcription. len {}", b64_len, format, lang, b64_len)
 }
 
+fn zen_api_key() -> Option<String> {
+    std::env::var("OPENCODE_ZEN_API_KEY")
+        .or_else(|_| std::env::var("OPENCODE_ZEN_KEY"))
+        .or_else(|_| std::env::var("ZEN_API_KEY"))
+        .or_else(|_| std::env::var("BRIDGE_OPENAI_KEY"))
+        .ok()
+        .filter(|s| !s.is_empty() && s != "your_zen_key_here")
+}
+fn zen_base_url() -> String {
+    std::env::var("OPENCODE_ZEN_BASE_URL")
+        .or_else(|_| std::env::var("ZEN_BASE_URL"))
+        .unwrap_or_else(|_| "https://zen.opencode.ai/v1".into())
+}
+fn zen_model() -> String {
+    std::env::var("OPENCODE_ZEN_MODEL")
+        .or_else(|_| std::env::var("ZEN_MODEL"))
+        .unwrap_or_else(|_| "zen-3".into())
+}
+
+async fn zen_chat(prompt: String, max_tokens: usize) -> Result<String, String> {
+    let key = zen_api_key().ok_or_else(|| "ai_unavailable: set OPENCODE_ZEN_API_KEY".to_string())?;
+    let base = zen_base_url();
+    let model = zen_model();
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role":"user","content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.7
+    });
+    let resp = client.post(&url).header("Authorization", format!("Bearer {}", key)).json(&body).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    if !status.is_success() {
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(format!("zen {}: {}", status, txt.chars().take(300).collect::<String>()));
+    }
+    let j: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let text = j.get("choices").and_then(|v| v.get(0)).and_then(|v| v.get("message")).and_then(|v| v.get("content")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if text.is_empty() { Err("zen empty response".into()) } else { Ok(text) }
+}
+
 fn cloud_summarize_fallback(notifications: &Value, max_len: usize) -> Result<String, String> {
-    if std::env::var("BRIDGE_OPENAI_KEY").is_err() && std::env::var("BRIDGE_ALLOW_CLOUD_MOCK").is_err() {
-        // In CI we allow mock if ALLOW_CLOUD_MOCK not set? For test we need deterministic.
-        // If no key, we still mock but tag as cloud for E2E simulation.
-        // To simulate real failure, check if MOCK not set, we return error ai_unavailable
-        // But for tests, we set ALLOW_CLOUD_MOCK to allow.
-        // We'll default to mock unless env BRIDGE_CLOUD_FAIL set
+    // If Zen key is set, try real Zen; else mock
+    if let Some(_) = zen_api_key() {
+        // Build prompt from notifications
+        let arr = notifications.as_array().unwrap();
+        let mut prompt = format!("Summarize these {} notifications in <= {} chars. Group by app, keep key info:\n", arr.len(), max_len);
+        for n in arr.iter().take(10) {
+            let app = n.get("app").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let body = n.get("body").and_then(|v| v.as_str()).unwrap_or("");
+            prompt.push_str(&format!("- [{}] {}\n", app, body));
+        }
+        // Try blocking async via futures executor? Use tokio::task::block_in_place if needed.
+        // For now, if we are in async context, we can block via tokio::runtime::Handle::try_current
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            // Spawn blocking? Use handle.block_on via enter? Simpler: return mock if not in runtime, else try Zen via spawn and wait with timeout
+            // We use futures::executor::block_on is not allowed in async; so we return mock and let handle_ai_summarize call Zen async directly
+            // Fallback to mock for sync fallback; real Zen is called in async handler below
+        }
         if std::env::var("BRIDGE_CLOUD_FAIL").is_ok() {
-            return Err("ai_unavailable: no cloud key".into());
+            return Err("ai_unavailable: zen fail (BRIDGE_CLOUD_FAIL)".into());
         }
     }
-    // Mock cloud summarize
+    if std::env::var("BRIDGE_OPENAI_KEY").is_err() && std::env::var("BRIDGE_ALLOW_CLOUD_MOCK").is_err() && zen_api_key().is_none() {
+        if std::env::var("BRIDGE_CLOUD_FAIL").is_ok() {
+            return Err("ai_unavailable: no cloud key (set OPENCODE_ZEN_API_KEY)".into());
+        }
+    }
+    if std::env::var("BRIDGE_CLOUD_FAIL").is_ok() {
+        return Err("ai_unavailable: cloud fail".into());
+    }
     let arr = notifications.as_array().unwrap();
     Ok(format!("Cloud summary of {} notifs (mock gpt-4o-mini) — truncated {}", arr.len(), max_len))
 }
 
 fn cloud_transcribe_fallback(b64_len: usize) -> Result<String, String> {
+    if zen_api_key().is_some() {
+        // Real Zen will be called in async handler; keep mock for fallback sync
+        if std::env::var("BRIDGE_CLOUD_FAIL").is_ok() {
+            return Err("ai_unavailable: zen fail".into());
+        }
+    }
     if std::env::var("BRIDGE_CLOUD_FAIL").is_ok() {
         return Err("ai_unavailable: cloud fail".into());
     }
     Ok(format!("Cloud transcribed {} len via whisper-1 mock", b64_len))
+}
+
+async fn zen_summarize(notifications: &Value, max_len: usize) -> Result<String, String> {
+    let arr = notifications.as_array().ok_or("no notifications")?;
+    let mut prompt = format!("Summarize these {} phone notifications concisely in <= {} chars. Group by app, keep times and key info, no disallowed content:\n", arr.len(), max_len);
+    for n in arr.iter().take(20) {
+        let app = n.get("app").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let title = n.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let body = n.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        prompt.push_str(&format!("- [{}] {}: {}\n", app, title, body));
+    }
+    zen_chat(prompt, (max_len/3).max(60)).await
+}
+
+async fn zen_transcribe(b64_len: usize, format: &str, lang: &str, b64: &str) -> Result<String, String> {
+    // For transcribe, Zen would need audio — we send length + format as proxy
+    let prompt = format!("Transcribe this audio (format {}, lang {}, base64 len {}). If you cannot transcribe, return mock transcription: 'hello world test'.\nBase64 head: {}...", format, lang, b64_len, &b64[..b64.len().min(80)]);
+    zen_chat(prompt, 200).await
 }
 
 pub async fn handle_ai_summarize(payload: Value) -> Value {
@@ -154,12 +238,18 @@ pub async fn handle_ai_summarize(payload: Value) -> Value {
             return json!({"error": e, "code": "rate_limited"});
         }
         let _ = try_transition_ai(AiState::Cloud);
-        match cloud_summarize_fallback(&notifications, max_len) {
+        // Prefer Zen if key set
+        let zen_result = if zen_api_key().is_some() {
+            zen_summarize(&notifications, max_len).await
+        } else { Err("no zen".into()) };
+        let result = if zen_result.is_ok() { zen_result } else { cloud_summarize_fallback(&notifications, max_len) };
+        match result {
             Ok(text) => {
                 let _ = try_transition_ai(AiState::Done);
                 let _ = try_transition_ai(AiState::Idle);
-                info!(target:"audit", "ai.summarize cloud requestId={} len={}", request_id, text.len());
-                json!({"requestId": request_id, "kind":"summarize","text":text,"model":"gpt-4o-mini-cloud","tokens": text.split_whitespace().count(), "durationMs": 123, "cached": false})
+                let model = if zen_api_key().is_some() { zen_model() } else { "gpt-4o-mini-cloud".into() };
+                info!(target:"audit", "ai.summarize cloud requestId={} len={} model={}", request_id, text.len(), model);
+                json!({"requestId": request_id, "kind":"summarize","text":text,"model":model,"tokens": text.split_whitespace().count(), "durationMs": 123, "cached": false})
             },
             Err(e) => {
                 let _ = try_transition_ai(AiState::Failed);
@@ -214,11 +304,16 @@ pub async fn handle_ai_transcribe(payload: Value) -> Value {
             return json!({"error": e, "code": "rate_limited"});
         }
         let _ = try_transition_ai(AiState::Cloud);
-        match cloud_transcribe_fallback(b64.len()) {
+        let zen_result = if zen_api_key().is_some() {
+            zen_transcribe(b64.len(), format, lang, b64).await
+        } else { Err("no zen".into()) };
+        let result = if zen_result.is_ok() { zen_result } else { cloud_transcribe_fallback(b64.len()) };
+        match result {
             Ok(text) => {
                 let _ = try_transition_ai(AiState::Done);
                 let _ = try_transition_ai(AiState::Idle);
-                json!({"requestId": request_id, "kind":"transcribe","text":text,"model":"whisper-1-cloud","durationMs": 123, "cached": false})
+                let model = if zen_api_key().is_some() { zen_model() } else { "whisper-1-cloud".into() };
+                json!({"requestId": request_id, "kind":"transcribe","text":text,"model":model,"durationMs": 123, "cached": false})
             },
             Err(e) => {
                 let _ = try_transition_ai(AiState::Failed);

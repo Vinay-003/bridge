@@ -1,0 +1,18 @@
+# Render Hobby (free) — static hosting for Bridge landing / control demo
+# No DB needed (Bridge is LAN-first, local SQLite/keyring only)
+# This just hosts the built Tauri frontend (apps/desktop/dist) as a static site for demo/docs
+services:
+  - type: web
+    name: bridge-static
+    env: static
+    plan: free
+    buildCommand: pnpm install && pnpm --filter desktop build
+    staticPublishPath: apps/desktop/dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
