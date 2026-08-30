@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -67,14 +68,66 @@ fun PairingScreen() {
         Text("Pair with Linux", style = MaterialTheme.typography.headlineSmall)
         Text("1. Linux shows QR in Bridge tray (or /tmp/bridge-qr.png)\n2. Tap Scan QR\n3. Confirm 6-digit SAS matches desktop\n4. Done — auto-reconnect via mDNS/BLE", style = MaterialTheme.typography.bodyMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                val opts = ScanOptions()
-                opts.setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                opts.setPrompt("Scan Bridge QR")
-                opts.setBeepEnabled(true)
-                opts.setOrientationLocked(false)
-                launcher.launch(opts)
+            var showManualDialog by remember { mutableStateOf(false) }
+        var manualQr by remember { mutableStateOf("") }
+        Button(onClick = {
+                try {
+                    // Check camera permission first
+                    val perm = android.Manifest.permission.CAMERA
+                    val hasPerm = androidx.core.content.ContextCompat.checkSelfPermission(ctx, perm) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (!hasPerm) {
+                        Toast.makeText(ctx, "Camera permission needed — grant and try again", Toast.LENGTH_SHORT).show()
+                        // Request via Activity's launcher (already requested on launch, but try again)
+                        showManualDialog = true
+                        return@Button
+                    }
+                    val opts = ScanOptions()
+                    opts.setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    opts.setPrompt("Scan Bridge QR — center the QR from xdg-open /tmp/bridge-qr.png")
+                    opts.setBeepEnabled(true)
+                    opts.setOrientationLocked(false)
+                    opts.setBarcodeImageEnabled(false)
+                    launcher.launch(opts)
+                } catch(e: Exception) {
+                    Toast.makeText(ctx, "Scanner failed: ${e.message} — use manual input below", Toast.LENGTH_LONG).show()
+                    showManualDialog = true
+                }
             }) { Text("Scan QR") }
+        if (showManualDialog) {
+            AlertDialog(onDismissRequest = { showManualDialog = false },
+                title = { Text("Paste QR manually") },
+                text = {
+                    Column {
+                        Text("If scanner didn't open (Android 16 / Shizuku), paste the full bridge://pair? string from xdg-open /tmp/bridge-qr.png or from desktop QR's QR text:")
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = manualQr, onValueChange = { manualQr = it }, placeholder = { Text("bridge://pair?v=1&id=...") }, modifier = Modifier.fillMaxWidth())
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        if (manualQr.isNotBlank()) {
+                            qr = manualQr
+                            prefs.edit { putString("last_qr", qr) }
+                            try {
+                                val uri = android.net.Uri.parse(qr)
+                                val host = uri.getQueryParameter("host") ?: "192.168.1.36"
+                                val port = uri.getQueryParameter("port")?.toIntOrNull() ?: 8443
+                                scannedHost = host; scannedPort = port
+                                prefs.edit { putString("host", host); putInt("port", port) }
+                                val intent = Intent(ctx, com.bridge.android.service.BridgeService::class.java).apply { putExtra("host", host); putExtra("port", port) }
+                                ctx.startForegroundService(intent)
+                                connected = true
+                                Toast.makeText(ctx, "Manual QR set $host:$port", Toast.LENGTH_SHORT).show()
+                            } catch(e: Exception) {
+                                Toast.makeText(ctx, "Invalid QR: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        showManualDialog = false
+                    }) { Text("Connect") }
+                },
+                dismissButton = { TextButton(onClick = { showManualDialog = false }) { Text("Cancel") } }
+            )
+        }
             OutlinedButton(onClick = {
                 try {
                     val stop = Intent(ctx, com.bridge.android.service.BridgeService::class.java).apply { action="STOP" }

@@ -46,20 +46,14 @@ class MainActivity : ComponentActivity() {
 
         // Don't auto-start FGS unless we have a saved pairing (user has scanned QR before)
         // This prevents "autoconnecting still, i didnt even do anything" confusion
-        val prefs = getSharedPreferences("bridge", 0)
-        val hasPairing = prefs.getString("last_qr","")?.isNotEmpty() == true
-        if (hasPairing) {
-            try {
-                val svc = Intent(this, BridgeService::class.java)
-                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
-            } catch (e: Exception) {
-                lastError = "FGS: $e"
-                Toast.makeText(this, "FGS start failed (will retry after perms): $e", Toast.LENGTH_LONG).show()
-            }
-        } else {
-            // No pairing yet — show Pair tab, don't start service
-            lastError = null
-        }
+        // Never auto-start on launch — user must tap Scan QR or Retry. This fixes "autoconnecting still, i didnt even do anything"
+        // Even if last_qr exists from previous install (adb install -r keeps data), we require explicit user action.
+        // Clear stale last_qr if it was from a previous daemon id that no longer matches? We'll just not auto-start.
+        lastError = null
+        // Optionally, if you want auto-reconnect after explicit pairing, uncomment:
+        // val prefs = getSharedPreferences("bridge", 0)
+        // val hasPairing = prefs.getString("last_qr","")?.isNotEmpty() == true
+        // if (hasPairing) { ... }
 
         setContent {
             MaterialTheme {

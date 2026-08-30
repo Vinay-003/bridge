@@ -25,10 +25,17 @@ fn read_battery() -> (u8, bool, f32) {
     let status = std::fs::read_to_string("/sys/class/power_supply/BAT0/status").unwrap_or_default();
     let s = status.trim().to_ascii_lowercase();
     let charging = s == "charging" || s == "full" || s == "fully-charged";
-    // temp: /sys/class/power_supply/BAT0/temp (tenths °C) or use 30 default
+    // temp: try BAT0/temp, then thermal_zone0, then k10temp via sensors fallback
     let temp_raw = std::fs::read_to_string("/sys/class/power_supply/BAT0/temp").ok()
         .and_then(|v| v.trim().parse::<f32>().ok())
         .map(|v| if v > 100.0 { v/10.0 } else { v })
+        .or_else(|| std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").ok()
+            .and_then(|v| v.trim().parse::<f32>().ok()).map(|v| v/1000.0))
+        .or_else(|| {
+            // Try sensors via `sensors` command? fallback to 66 if files exist
+            std::fs::read_to_string("/sys/class/hwmon/hwmon0/temp1_input").ok()
+                .and_then(|v| v.trim().parse::<f32>().ok()).map(|v| v/1000.0)
+        })
         .unwrap_or(30.0);
     // Clamp pct 0..100, if 0 try upower fallback via percentage file? For now return pct
     let pct_clamped = pct.min(100);
